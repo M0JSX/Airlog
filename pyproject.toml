@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airlog"
+version = "1.1.0"
+description = "Radio station logger: hourly archive files plus instant grabs of what just aired"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Jonathan" }]
+dependencies = []   # desktop app: standard library + Tk only; needs ffmpeg installed
+
+[project.optional-dependencies]
+server = ["flask>=2.2", "waitress"]
+
+[project.gui-scripts]
+airlog = "airlog.__main__:main"
+
+[project.scripts]
+airlog-server = "airlog.server:main"
+
+[tool.setuptools]
+packages = ["airlog"]
+
+[tool.setuptools.package-data]
+airlog = ["web/*"]
