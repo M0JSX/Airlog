@@ -76,6 +76,10 @@ class Config:
     editor_path: str = ""             # blank = open with system default app
     open_after_grab: bool = False
 
+    # --- Song identification (Shazam, unofficial API) ---
+    identify_songs: bool = True
+    identify_interval_s: int = 30     # how often a sample is checked (minimum 15)
+
     # --- Behaviour ---
     autostart: bool = True
     silence_alert_db: float = -50.0

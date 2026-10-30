@@ -27,7 +27,7 @@ def main() -> None:
         cfg = Config(station_name="Test FM", source_type="custom",
                      custom_input_args="-re -f lavfi -i sine=frequency=440:sample_rate=48000",
                      archive_dir=str(root / "arch"), grabs_dir=str(root / "grabs"),
-                     spool_dir=str(root / "spool"), buffer_minutes=10)
+                     spool_dir=str(root / "spool"), buffer_minutes=10, identify_songs=False)
         real = time.time()
         boundary = next_boundary(real, 60)
         offset = boundary - 8 - real

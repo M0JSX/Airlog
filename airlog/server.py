@@ -37,6 +37,7 @@ EDITABLE = [
     "split_minutes", "archive_keep_days",
     "buffer_minutes", "spool_dir", "grabs_dir", "grab_format", "grab_pattern", "grab_preroll_s",
     "silence_alert_db", "silence_alert_s", "autostart", "web_password",
+    "identify_songs", "identify_interval_s",
 ]
 
 
@@ -153,7 +154,15 @@ def create_app(holder: Holder) -> Flask:
             channels=cfg.channels,
             grab_format=cfg.grab_format,
             grab_preroll_s=cfg.grab_preroll_s,
+            identify=cfg.identify_songs,
+            identify_state=e.recognizer.state if e.recognizer else "off",
+            now_playing=asdict(cur) if (cur := e.tracks.current()) else None,
+            tracks_rev=e.tracks.rev,
         )
+
+    @app.get("/api/tracks")
+    def tracks():
+        return jsonify(tracks=holder.engine.tracks.recent(int(request.args.get("limit", 200))))
 
     @app.get("/api/peaks")
     def peaks():

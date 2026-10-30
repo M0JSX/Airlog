@@ -82,6 +82,15 @@ footer{display:flex;justify-content:space-between;color:var(--dim);font-size:12p
 .frow input[type=text],.frow input[type=password],.frow input[type=number],.frow select{width:100%}
 .sheetbtns{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 #toast{position:fixed;bottom:44px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:8px 14px;border-radius:8px;display:none;z-index:20}
+.np{display:flex;align-items:center;gap:12px;min-width:0;flex:1 1 280px;max-width:520px}
+.np img{width:56px;height:56px;border-radius:6px;object-fit:cover;background:var(--panel2);flex:none}
+.np img[src=""]{visibility:hidden}
+.np .npt{min-width:0}
+.np .song{font-size:17px;font-weight:700;color:var(--amber);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.np .artist{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.np .since{font-size:12px;color:var(--dim)}
+tr.playing td{color:var(--amber)}
+td a{color:inherit}
 kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding:0 4px;color:var(--dim)}
 </style>
 </head>
@@ -91,6 +100,10 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
     <div class="st"><span id="dot" class="dot"></span><span id="stxt">CONNECTING</span><span id="station" class="station"></span></div>
     <div class="sub" id="source"></div>
     <div class="sub" id="file"></div>
+  </div>
+  <div class="np" id="np" title="Identified by Shazam">
+    <img id="npart" src="" alt="">
+    <div class="npt"><div class="cap" style="margin:0">Now playing</div><div class="song" id="npsong">—</div><div class="artist" id="npartist"></div><div class="since" id="npsince"></div></div>
   </div>
   <div class="hright">
     <canvas id="meter" width="340" height="48" style="width:340px;height:48px"></canvas>
@@ -161,11 +174,13 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
 
   <div>
     <div class="tabs">
-      <button class="tab on" data-tab="grabs">Saved grabs</button>
+      <button class="tab on" data-tab="songs">Songs</button>
+      <button class="tab" data-tab="grabs">Saved grabs</button>
       <button class="tab" data-tab="archive">Hourly archive</button>
       <button class="tab" data-tab="log">Log</button>
     </div>
-    <div class="tabbody on" id="tab-grabs"><table><thead><tr><th>File</th><th>Saved</th><th>Size</th><th></th></tr></thead><tbody id="grabrows"></tbody></table></div>
+    <div class="tabbody on" id="tab-songs"><table><thead><tr><th>Started</th><th>Song</th><th>Length</th><th></th></tr></thead><tbody id="songrows"></tbody></table></div>
+    <div class="tabbody" id="tab-grabs"><table><thead><tr><th>File</th><th>Saved</th><th>Size</th><th></th></tr></thead><tbody id="grabrows"></tbody></table></div>
     <div class="tabbody" id="tab-archive">
       <div class="toolbar" style="margin-bottom:6px"><label>Day <select id="day"></select></label><button class="small" id="archrefresh">Refresh</button></div>
       <table><thead><tr><th>File</th><th>Modified</th><th>Size</th><th></th></tr></thead><tbody id="archrows"></tbody></table>
@@ -203,6 +218,7 @@ let peaks = null;                 // last /api/peaks response
 let peakBusy = false, lastPeakReq = 0, peakDirty = true;
 const hold = [0,0], pk = [[0,0],[0,0]];
 let drag = null, hoverX = null;
+let tracks = [], tracksRev = -1, trackHits = [];  // identified songs (newest first) and their label boxes on the timeline
 
 // ------------------------------------------------------------ time helpers
 const elapsed = () => (performance.now() - stAt) / 1000;
@@ -320,6 +336,8 @@ function renderStatus(){
     `Server clock <span class="mono">${hms(s.server_time,false)}</span>` +
     (Math.abs(s.server_time - Date.now()/1000) > 2 ? ` <span class="warn">(this machine is ${(Date.now()/1000 - s.server_time).toFixed(1)}s off — times shown are the recorder's)</span>` : "") +
     `<br>Pre-roll on downloads: ${s.grab_preroll_s}s`;
+  renderNowPlaying();
+  if (s.tracks_rev !== tracksRev){ tracksRev = s.tracks_rev; loadTracks(); }
   if (!$("fmt").dataset.set){ $("fmt").value = s.grab_format; $("fmt").dataset.set = 1; }
 }
 
@@ -414,6 +432,25 @@ function drawWave(){
     if (a != null && b != null) path(a, b, C.selwave);
   }
   g.fillStyle = "#3a3220"; g.fillRect(0, Math.round(mid), w, 1);
+
+  // identified songs: a dashed line where each starts, its name in a band along the top
+  trackHits = [];
+  g.font = "11px system-ui";
+  for (const tr of tracks){
+    const end = tr.end ?? hi ?? t1;
+    if (end < t0 || tr.start > t1) continue;
+    const xa = X(tr.start), xb = Math.min(w, X(end));
+    if (xa >= 0){ g.fillStyle = "#8a7a52"; for (let y = 0; y < wh; y += 6) g.fillRect(Math.round(xa), y, 1, 3); }
+    const lx = Math.max(0, xa) + 4, room = xb - lx - 4;
+    if (room < 24) continue;
+    let label = `♪ ${tr.artist} – ${tr.title}`;
+    while (label.length > 3 && g.measureText(label).width > room) label = label.slice(0, -2);
+    if (label !== `♪ ${tr.artist} – ${tr.title}`) label = label.slice(0, -1) + "…";
+    const lw = g.measureText(label).width + 8;
+    g.fillStyle = "#2a2618e6"; g.fillRect(lx - 4, 20, lw, 17);
+    g.fillStyle = tr.end == null ? C.amber : "#d8c79a"; g.fillText(label, lx, 32);
+    trackHits.push({x0: lx - 4, x1: lx - 4 + lw, tr});
+  }
 
   // in/out markers
   g.font = "bold 11px " + css("--mono");
@@ -527,6 +564,8 @@ wave.addEventListener("pointerdown", e => {
   if (e.button !== 0) return;
   wave.setPointerCapture(e.pointerId);
   frozenEnd = view()[1];
+  const hit = e.offsetY >= 20 && e.offsetY <= 37 && trackHits.find(h => e.offsetX >= h.x0 && e.offsetX <= h.x1);
+  if (hit){ selectTrack(hit.tr, false); return; }
   const t = clampBuf(xToT(e.offsetX));
   const near = tt => tt != null && Math.abs(tToX(tt) - e.offsetX) <= 7;
   if (near(sel.a) && sel.b != null) drag = sel.b;
@@ -587,6 +626,48 @@ function rowButtons(url, playable, delPath){
 const enc = s => s.split("/").map(encodeURIComponent).join("/");
 const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const when = m => { const x = new Date(m*1000); return x.toLocaleDateString(undefined,{day:"2-digit",month:"short"}) + " " + x.toLocaleTimeString(undefined,{hour12:false}); };
+// ------------------------------------------------------------ songs
+function renderNowPlaying(){
+  const np = st.now_playing;
+  $("npsong").textContent = np ? np.title : "—";
+  $("npartist").textContent = np ? np.artist : "";
+  const art = np && np.art ? np.art : "";
+  if ($("npart").getAttribute("src") !== art) $("npart").setAttribute("src", art);
+  const state = {off:"Song identification is off (Settings)", unavailable:"Song identification isn't available on this recorder",
+                 failing:"Can't reach Shazam — retrying", starting:"Listening…", listening:"Listening…"}[st.identify_state] || "";
+  $("npsince").textContent = np ? `since ${hms(np.start,false)}` + (st.identify_state === "failing" ? " · can't reach Shazam" : "")
+                                : (st.running ? state : "Not recording");
+}
+async function loadTracks(){
+  try { tracks = (await api("/api/tracks?limit=300")).tracks; } catch(e){ return; }
+  if (document.querySelector(".tab.on").dataset.tab === "songs") renderSongs();
+}
+function renderSongs(){
+  const lo = bufStart();
+  $("songrows").innerHTML = tracks.map((tr, i) => {
+    const end = tr.end ?? live();
+    const inBuf = lo != null && end != null && end > lo;
+    const name = `${esc(tr.artist)} – ${esc(tr.title)}`;
+    const day = d(tr.start).toISOString().slice(0,10) === d(serverNow()).toISOString().slice(0,10) ? "" : d(tr.start).toISOString().slice(5,10) + " ";
+    return `<tr class="${tr.end == null ? "playing" : ""}"><td class="mono">${day}${hms(tr.start,false)}</td>` +
+      `<td>${tr.url ? `<a href="${esc(tr.url)}" target="_blank" rel="noopener">${name}</a>` : name}${tr.end == null ? " — playing" : ""}</td>` +
+      `<td class="mono">${end ? dur(end - tr.start).replace(/\.\d$/, "") : ""}</td>` +
+      `<td class="act">${inBuf ? `<button class="small" data-song="${i}">Select</button>` : "<span class='dim'>not in buffer</span>"}</td></tr>`;
+  }).join("") || `<tr><td colspan=4 class="dim">${st && st.identify === false ? "Song identification is off — turn it on in Settings." : "No songs identified yet. Airlog checks the audio every " + (cfgInterval()) + " seconds."}</td></tr>`;
+  document.querySelectorAll("[data-song]").forEach(b => b.onclick = () => selectTrack(tracks[+b.dataset.song], true));
+}
+function cfgInterval(){ return cfgCache ? cfgCache.config.identify_interval_s : 30; }
+function selectTrack(tr, scroll){
+  const a = clampBuf(tr.start), b = clampBuf(tr.end ?? live());
+  if (a == null || b == null || b <= a) return toast("That song is no longer in the grab buffer", "bad");
+  setSel(a, b);
+  msg(`Selected ${tr.artist} – ${tr.title}. Times come from Shazam, so check the edges before downloading.`);
+  if (scroll){
+    const len = Math.max(span, (b - a) * 1.2);
+    follow = false; $("follow").checked = false; viewEnd = Math.min(live() ?? b, b + (len - (b - a)) / 2); setSpan(len, false);
+  }
+}
+
 async function loadGrabs(){
   try {
     const r = await api("/api/grabs");
@@ -618,7 +699,7 @@ document.addEventListener("click", async e => {
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === b));
   document.querySelectorAll(".tabbody").forEach(x => x.classList.toggle("on", x.id === "tab-" + b.dataset.tab));
-  ({grabs:loadGrabs, archive:loadArchive, log:loadLog})[b.dataset.tab]();
+  ({songs:renderSongs, grabs:loadGrabs, archive:loadArchive, log:loadLog})[b.dataset.tab]();
 });
 $("day").onchange = loadArchive; $("archrefresh").onclick = loadArchive;
 
@@ -652,6 +733,9 @@ const FIELDS = [
   ["grab_preroll_s","Pre-roll (s)","number",null,"Added before the in-point on downloads and saves"],
   ["grabs_dir","Saved grabs folder","text"],
   ["grab_pattern","Grab file name","text"],
+  ["Song identification"],
+  ["identify_songs","Identify songs","bool",null,"Sends a 12-second sample to Shazam (unofficial API) at each check"],
+  ["identify_interval_s","Check every (s)","number",null,"Minimum 15"],
   ["Alerts & access"],
   ["silence_alert_db","Silence below (dBFS)","number"],
   ["silence_alert_s","…for (seconds)","number"],
@@ -764,7 +848,7 @@ window.addEventListener("resize", () => peakDirty = true);
 
 colours();
 pollStatus(); pollPeaks(); loadGrabs();
-setInterval(() => { const on = document.querySelector(".tab.on").dataset.tab; if (on === "log") loadLog(); if (on === "archive") loadArchive(); if (on === "grabs") loadGrabs(); }, 5000);
+setInterval(() => { const on = document.querySelector(".tab.on").dataset.tab; if (on === "log") loadLog(); if (on === "archive") loadArchive(); if (on === "grabs") loadGrabs(); if (on === "songs") renderSongs(); }, 5000);
 requestAnimationFrame(frame);
 </script>
 </body>

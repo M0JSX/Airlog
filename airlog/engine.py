@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import sources
+from . import nowplaying, sources
 from .config import Config
 
 NO_WINDOW = sources.NO_WINDOW
@@ -339,6 +339,8 @@ class Engine:
 
         retention = max(5, cfg.buffer_minutes) * 60
         self.spool = Spool(cfg.effective_spool_dir(), self.sr, self.ch, retention)
+        self.tracks = nowplaying.TrackLog(cfg.effective_spool_dir() / "tracks.json")
+        self.recognizer: nowplaying.Recognizer | None = None
 
         # Peak history for the waveform: one byte (0-255) per 100 ms block.
         self.peak_lock = threading.Lock()
@@ -415,9 +417,13 @@ class Engine:
         self._thread.start()
         threading.Thread(target=self._watchdog, name="watchdog", daemon=True).start()
         threading.Thread(target=self._housekeeping, name="housekeeping", daemon=True).start()
+        if self.cfg.identify_songs:
+            self.recognizer = nowplaying.Recognizer(self)
+            self.recognizer.start()
 
     def stop(self) -> None:
         self._running = False
+        self.tracks.close(self.live_time() or time.time())
         p = self._proc
         if p and p.poll() is None:
             try:

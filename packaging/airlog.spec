@@ -4,16 +4,25 @@
 # The same exe is the UI launcher, the Windows service (--service) and the classic desktop app (--classic).
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
+# Song identification (unofficial Shazam client) and its native fingerprinting module.
+shz_datas, shz_bins, shz_hidden = [], [], []
+for pkg in ("shazamio", "shazamio_core"):
+    d, b, h = collect_all(pkg)
+    shz_datas += d; shz_bins += b; shz_hidden += h
+
 ROOT = Path(SPECPATH).parent
 
 a = Analysis(
     [str(ROOT / "run_airlog.pyw")],
     pathex=[str(ROOT)],
+    binaries=shz_bins,
     datas=[(str(ROOT / "airlog" / "assets"), "airlog/assets"),
-           (str(ROOT / "airlog" / "web"), "airlog/web")],
+           (str(ROOT / "airlog" / "web"), "airlog/web")] + shz_datas,
     hiddenimports=["airlog.ui", "airlog.settings", "airlog.osutil", "airlog.selftest",
-                   "airlog.server", "airlog.winservice", "waitress",
-                   "servicemanager", "win32serviceutil", "win32service", "win32event", "win32timezone"],
+                   "airlog.server", "airlog.winservice", "airlog.nowplaying", "waitress",
+                   "servicemanager", "win32serviceutil", "win32service", "win32event", "win32timezone"] + shz_hidden,
     excludes=["PIL", "numpy"],
     noarchive=False,
 )

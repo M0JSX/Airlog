@@ -40,7 +40,7 @@ if (-not (Test-Path ".build\venv\Scripts\python.exe")) {
 }
 $vpy = ".build\venv\Scripts\python.exe"
 & $vpy -m pip install --quiet --upgrade pip
-& $vpy -m pip install --quiet "pyinstaller>=6.6" "flask>=2.2" waitress pywin32
+& $vpy -m pip install --quiet "pyinstaller>=6.6" "flask>=2.2" waitress pywin32 shazamio
 & $vpy -c "import tkinter" ; if ($LASTEXITCODE) { throw "This Python has no tkinter. Reinstall Python with 'tcl/tk' ticked." }
 
 # ---------------------------------------------------------------- ffmpeg

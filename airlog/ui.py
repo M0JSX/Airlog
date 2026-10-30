@@ -179,6 +179,8 @@ class App(tk.Tk):
         self.source_lbl.pack(anchor="w", pady=(2, 0))
         self.file_lbl = ttk.Label(left, text="", style="PanelDim.TLabel")
         self.file_lbl.pack(anchor="w")
+        self.np_lbl = ttk.Label(left, text="", style="Panel.TLabel", foreground=AMBER)
+        self.np_lbl.pack(anchor="w", pady=(4, 0))
 
         right = ttk.Frame(head, style="Panel.TFrame")
         right.pack(side="right", fill="y")
@@ -816,6 +818,9 @@ class App(tk.Tk):
                                          f"   ·   next file at {dt.datetime.fromtimestamp(e.archive.boundary):%H:%M}")
         else:
             self.file_lbl.configure(text="Archive off" if not self.cfg.archive_enabled else "")
+        np = e.tracks.current()
+        self.np_lbl.configure(text=f"♪  {np.artist} – {np.title}   (since {dt.datetime.fromtimestamp(np.start):%H:%M:%S})"
+                              if np else "")
         sil = e.silence_seconds() if e.status == "recording" else 0
         self.silence_lbl.configure(text=f"⚠ SILENCE {int(sil)}s" if sil >= self.cfg.silence_alert_s else "")
         lo, hi = e.buffer_start(), e.live_time()

@@ -48,15 +48,17 @@ def run(report: Path) -> int:
         from .config import Config
         from .engine import Engine
         tmp = Path(tempfile.mkdtemp(prefix="airlog_selftest_"))
+        e = None
         try:
             cfg = Config(station_name="Selftest", source_type="custom",
                          custom_input_args="-re -f lavfi -i sine=frequency=440:sample_rate=48000",
                          archive_dir=str(tmp / "arch"), grabs_dir=str(tmp / "grabs"),
-                         spool_dir=str(tmp / "spool"), buffer_minutes=5)
+                         spool_dir=str(tmp / "spool"), buffer_minutes=5, identify_songs=False)
             e = Engine(cfg)
             e.start()
             deadline = time.time() + 15
-            while time.time() < deadline and (e.live_time() is None or e.live_time() - (e.buffer_start() or 0) < 3):
+            while time.time() < deadline and (e.live_time() is None or e.buffer_start() is None
+                                              or e.live_time() - e.buffer_start() < 3):
                 time.sleep(0.2)
             lt = e.live_time()
             if lt is None:
@@ -73,6 +75,8 @@ def run(report: Path) -> int:
                 raise RuntimeError(f"grab length {secs}")
             return f"captured, archive {files[0].name} {files[0].stat().st_size} bytes, grab {secs:.2f}s"
         finally:
+            if e and e.running:
+                e.stop()
             shutil.rmtree(tmp, ignore_errors=True)
 
     def web_check():
@@ -91,6 +95,9 @@ def run(report: Path) -> int:
                 raise RuntimeError(f"/ returned {page.status_code}")
             if status.status_code != 200 or status.get_json().get("station") != "Selftest":
                 raise RuntimeError(f"/api/status returned {status.status_code}")
+            tracks = client.get("/api/tracks")
+            if tracks.status_code != 200 or "tracks" not in tracks.get_json():
+                raise RuntimeError(f"/api/tracks returned {tracks.status_code}")
             if icon.status_code != 200:
                 raise RuntimeError(f"/favicon.ico returned {icon.status_code}")
             detail = f"UI page {len(page.data)} bytes, /api/status OK"
@@ -102,10 +109,32 @@ def run(report: Path) -> int:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def identify_check():
+        # Fingerprint 12 s of synthetic audio locally (no network): proves the Shazam client
+        # and its native module are bundled and work.
+        import array
+        import asyncio
+        import io
+        import math
+        import wave
+        import shazamio  # noqa: F401
+        import shazamio_core
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+            w.writeframes(array.array("h", (int(8000 * math.sin(2 * math.pi * (300 + i // 8000 * 97) * i / 16000))
+                                            for i in range(16000 * 12))).tobytes())
+
+        async def sign():
+            return await shazamio_core.Recognizer().recognize_bytes(buf.getvalue(), None)
+        sig = asyncio.run(sign())
+        return f"Shazam fingerprint OK ({len(sig.signature.uri)} chars)"
+
     check("tkinter", tk_check)
     check("ffmpeg", ffmpeg_check)
     check("engine", engine_check)
     check("web", web_check)
+    check("identify", identify_check)
     lines.append("RESULT  " + ("OK" if ok else "FAILED"))
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 0 if ok else 1

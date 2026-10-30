@@ -184,6 +184,10 @@ class SettingsDialog(tk.Toplevel):
                                                           width=10), "dBFS")
         self.row(f, 3, "…for longer than", ttk.Spinbox(f, from_=3, to=600, textvariable=self.var("silence_alert_s", tk.IntVar),
                                                        width=10), "seconds")
+        ttk.Checkbutton(f, text="Identify songs with Shazam (sends a 12-second sample at each check)",
+                        variable=self.var("identify_songs", tk.BooleanVar)).grid(row=4, column=1, sticky="w", pady=4)
+        self.row(f, 5, "Check every", ttk.Spinbox(f, from_=15, to=600, textvariable=self.var("identify_interval_s", tk.IntVar),
+                                                  width=10), "seconds")
         return f
 
     # ------------------------------------------------------------- behaviour

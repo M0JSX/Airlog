@@ -108,6 +108,32 @@ port-forward it.
   and there's a silence alert.
 - **Restarts:** the grab buffer survives a service restart, but not a reboot if
   it's kept in RAM.
+- **Song identification:** every 30 s (configurable) Airlog sends a 12-second
+  sample of the audio to Shazam. The current song, with its cover art, appears at
+  the top of the page. Each song is labelled on the timeline (click a label to
+  select the song), and the **Songs** tab lists what played. It works for any
+  source, including a sound card. See below.
+
+### Song identification
+
+This uses [shazamio](https://github.com/shazamio/ShazamIO), an *unofficial*
+client for Shazam's private app API. It needs no account or key. Shazam doesn't
+support it, so it can stop working without notice, and heavy use may be
+rate-limited. When Shazam can't be reached, the page says so and Airlog retries
+with a back-off. Recording is never affected.
+
+- Shazam reports how far into the song the sample was, so each song's start time
+  is estimated from that. Treat the times as a guide, accurate to a second or
+  two, and check the edges before you download a song.
+- Speech, jingles and ads don't match. After two checks in a row with no match,
+  the current song is closed.
+- Only the 12-second samples are sent, and only while recording. Turn it off
+  under **Settings → Song identification**.
+- The song list is kept in `tracks.json` in the grab buffer folder, holding the
+  last 1,000 songs.
+- The Windows build includes it. From source, run `pip install shazamio`. The Pi
+  installer doesn't install it, so on the Pi the page shows identification as
+  unavailable until you add it.
 
 ## Desktop app (single machine)
 
@@ -210,6 +236,7 @@ The browser UI uses these; they're handy for scripting too.
 | `POST /api/grab {from,to,fmt}` | save a clip on the recorder |
 | `GET /api/grabs`, `DELETE /api/grabs/<path>` | saved grabs |
 | `GET /api/archive[?date=YYYY-MM-DD]` | hourly files |
+| `GET /api/tracks[?limit=200]` | identified songs, newest first (`now_playing` is also in `/api/status`) |
 | `GET/POST /api/config` | settings |
 | `POST /api/record {action: start\|stop}` | control |
 
@@ -223,4 +250,5 @@ now=$(date +%s); curl -o clip.mp3 "http://pi:8080/api/clip?from=$((now-120))&to=
 
 `python tests/test_engine.py` fakes the clock (inside the test only) to 8 s
 before the hour, records a tone with a simulated dropout, and checks the split,
-the gap fill and a grab.
+the gap fill and a grab. `python tests/test_nowplaying.py` checks the
+song-change logic against canned Shazam answers (no network).
