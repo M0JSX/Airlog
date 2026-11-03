@@ -40,6 +40,7 @@ def serve_until(config_path: Path, wait) -> None:
     holder = Holder(cfg, config_path)
     if cfg.autostart:
         holder.engine.start()
+    holder.start_announcing()
     srv = create_server(create_app(holder), host=cfg.web_host, port=cfg.web_port, threads=12, channel_timeout=600)
     threading.Thread(target=srv.run, daemon=True, name="web").start()
     print(f"{stamp()} Service started; UI on port {cfg.web_port}", flush=True)
@@ -48,6 +49,8 @@ def serve_until(config_path: Path, wait) -> None:
     finally:
         print(f"{stamp()} Service stopping", flush=True)
         srv.close()
+        if holder.advertiser:
+            holder.advertiser.close()
         holder.engine.stop()
 
 
@@ -115,10 +118,22 @@ def _find_chromium() -> list[str] | None:
     return None
 
 
+def app_window_browser() -> str | None:
+    """Name of the browser open_url() would use for an app window, or None (default browser)."""
+    b = _find_chromium()
+    if not b:
+        return None
+    return b[2] if b[0] == "open" else Path(b[0]).stem
+
+
 def open_window(port: int) -> None:
-    url = f"http://localhost:{port}/"
+    open_url(f"http://localhost:{port}/")
+
+
+def open_url(url: str, app_window: bool = True) -> None:
+    """Open url in a chrome-less Chrome/Edge window if one is installed (and wanted), else the default browser."""
     _clean_env_for_children()
-    browser = _find_chromium()
+    browser = _find_chromium() if app_window else None
     if browser:
         try:
             subprocess.Popen(browser + [f"--app={url}", "--window-size=1400,900"], creationflags=NO_WINDOW,

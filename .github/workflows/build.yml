@@ -37,7 +37,8 @@ jobs:
           path: |
             dist/Airlog-*.zip
             dist/Airlog-Setup-*.exe
-            dist/selftest.txt
+            dist/Airlog-Viewer-Setup-*.exe
+            dist/selftest*.txt
           if-no-files-found: error
 
   linux:
@@ -73,6 +74,7 @@ jobs:
           path: |
             dist/Airlog-*.tar.gz
             dist/airlog_*.deb
+            dist/airlog-viewer_*.deb
             dist/selftest-*.txt
           if-no-files-found: error
 
@@ -113,6 +115,8 @@ jobs:
           files: |
             artifacts/Airlog-*.zip
             artifacts/Airlog-Setup-*.exe
+            artifacts/Airlog-Viewer-Setup-*.exe
             artifacts/Airlog-*.tar.gz
             artifacts/airlog_*.deb
+            artifacts/airlog-viewer_*.deb
             artifacts/Airlog-*.dmg

@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import hashlib
 import hmac
+import secrets
 import logging
 import os
 import re
@@ -22,7 +24,7 @@ from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory, stream_with_context
 
-from . import __version__, sources
+from . import __version__, discovery, sources
 from .config import Config
 from .engine import Engine
 
@@ -38,8 +40,12 @@ EDITABLE = [
     "split_minutes", "archive_keep_days",
     "buffer_minutes", "spool_dir", "grabs_dir", "grab_format", "grab_pattern", "grab_preroll_s",
     "silence_alert_db", "silence_alert_s", "autostart", "web_password",
-    "identify_songs", "identify_interval_s",
+    "identify_songs", "identify_interval_s", "announce", "trusted_lan",
 ]
+
+SESSION_COOKIE = "airlog_session"
+SESSION_DAYS = 30
+LOGIN_TOKEN_S = 60
 
 
 class Holder:
@@ -51,6 +57,17 @@ class Holder:
         self.lock = threading.Lock()
         self.engine = self._new_engine()
         self.started = time.time()
+        self.advertiser: discovery.Advertiser | None = None
+
+    def start_announcing(self) -> None:
+        """mDNS announcement for Airlog Viewer (only for a real server, not tests/self-test)."""
+        self.advertiser = discovery.Advertiser(log=lambda m: self.engine.log(m))   # whichever engine is current
+        self.announce()
+
+    def announce(self) -> None:
+        if self.advertiser is not None:
+            c = self.cfg
+            self.advertiser.update(c.station_name, c.web_port, __version__, bool(c.web_password), c.announce)
 
     def _new_engine(self) -> Engine:
         e = Engine(self.cfg)
@@ -66,6 +83,7 @@ class Holder:
                 self.engine.logs.append(line)
             if start:
                 self.engine.start()
+        self.announce()             # station name / password / on-off may have changed
 
 
 def tz_offset(t: float) -> float:
@@ -74,8 +92,8 @@ def tz_offset(t: float) -> float:
 
 
 ADMIN_REFUSED = ("Changing settings or starting/stopping the recorder from another machine needs a web "
-                 "password. Set one in Settings on the recorder itself (http://localhost:<port>/), "
-                 "then sign in here.")
+                 "password, or \"Trusted network\" turned on. Change that in Settings on the recorder itself "
+                 "(http://localhost:<port>/).")
 
 
 def is_local_request() -> bool:
@@ -98,10 +116,30 @@ def create_app(holder: Holder) -> Flask:
     app.config["JSON_SORT_KEYS"] = False
 
     # ---------------------------------------------------------------- auth
+    login_tokens: dict[str, float] = {}          # one-time token -> expiry (monotonic)
+
+    def session_key(pw: str) -> bytes:
+        # Changing the password invalidates every session cookie.
+        return hmac.new(pw.encode(), b"airlog-session-v1", hashlib.sha256).digest()
+
+    def make_session(pw: str) -> str:
+        exp = str(int(time.time()) + SESSION_DAYS * 86400)
+        return exp + "." + hmac.new(session_key(pw), exp.encode(), hashlib.sha256).hexdigest()
+
+    def valid_session(pw: str, value: str) -> bool:
+        exp, _, sig = (value or "").partition(".")
+        if not exp.isdigit() or int(exp) < time.time():
+            return False
+        return hmac.compare_digest(sig, hmac.new(session_key(pw), exp.encode(), hashlib.sha256).hexdigest())
+
     @app.before_request
     def check_auth():
         pw = holder.cfg.web_password
         if not pw:
+            return None
+        if request.path == "/login" or (request.path == "/api/login" and request.method == "POST"):
+            return None
+        if valid_session(pw, request.cookies.get(SESSION_COOKIE, "")):
             return None
         hdr = request.headers.get("Authorization", "")
         if hdr.startswith("Basic "):
@@ -117,9 +155,10 @@ def create_app(holder: Holder) -> Flask:
         return jsonify(error=msg), code
 
     def can_admin() -> bool:
-        """Settings and record control: anyone who passed the password check, or, with no password
-        set, only a browser on the recorder itself. Grabbing and listening stay open to the LAN."""
-        return bool(holder.cfg.web_password) or is_local_request()
+        """Settings and record control: anyone who passed the password check; with no password set,
+        a browser on the recorder itself, or anyone if "trusted network" is on. Grabbing and listening
+        are always open to whoever can reach the UI."""
+        return bool(holder.cfg.web_password) or holder.cfg.trusted_lan or is_local_request()
 
     def audio_file(root: Path, rel: str) -> Path:
         """Only audio files are served or deleted, whatever the folder settings point at."""
@@ -136,6 +175,41 @@ def create_app(holder: Holder) -> Flask:
             return float(v)
         except ValueError:
             abort(err(f"bad {name}"))
+
+    # ---------------------------------------------------------------- one-time login (Airlog Viewer)
+    @app.post("/api/login")
+    def api_login():
+        """Swap the password for a single-use link token, so the viewer can open the UI signed in
+        without putting the password in a URL."""
+        pw = holder.cfg.web_password
+        if not pw:
+            return jsonify(token=None, password_required=False)
+        given = str((request.get_json(silent=True) or {}).get("password", ""))
+        if not hmac.compare_digest(given.encode(), pw.encode()):
+            time.sleep(1)                        # slow down guessing
+            return err("wrong password", 403)
+        now = time.monotonic()
+        for t, exp in list(login_tokens.items()):
+            if exp < now:
+                login_tokens.pop(t, None)
+        token = secrets.token_urlsafe(24)
+        login_tokens[token] = now + LOGIN_TOKEN_S
+        return jsonify(token=token, password_required=True)
+
+    @app.get("/login")
+    def login_link():
+        pw = holder.cfg.web_password
+        exp = login_tokens.pop(request.args.get("t", ""), 0)
+        if pw and exp < time.monotonic():
+            return Response("<!doctype html><meta charset=utf-8><title>Airlog</title>"
+                            "<p style='font:15px system-ui;margin:2em'>This sign-in link has expired or was "
+                            "already used. Open the recorder again from Airlog Viewer, or "
+                            "<a href='/'>sign in with the password</a>.", 403, mimetype="text/html")
+        resp = Response(status=303, headers={"Location": "/", "Cache-Control": "no-store"})
+        if pw:
+            resp.set_cookie(SESSION_COOKIE, make_session(pw), max_age=SESSION_DAYS * 86400,
+                            httponly=True, samesite="Strict", path="/")
+        return resp
 
     # ---------------------------------------------------------------- pages
     @app.get("/")
@@ -380,8 +454,9 @@ def main() -> None:
     holder = Holder(cfg, cfg_path)
     if cfg.autostart:
         holder.engine.start()
+    holder.start_announcing()
     app = create_app(holder)
-    print(f"Airlog {__version__} — open http://{host if host != '0.0.0.0' else '<this-pi>'}:{port}/", flush=True)
+    print(f"Airlog {__version__} — open http://{host if host != '0.0.0.0' else '<this-machine>'}:{port}/", flush=True)
     try:
         from waitress import serve        # preferred if installed
         serve(app, host=host, port=port, threads=12, channel_timeout=600)
@@ -389,6 +464,8 @@ def main() -> None:
         logging.getLogger("werkzeug").setLevel(logging.WARNING)
         app.run(host=host, port=port, threaded=True, use_reloader=False)
     finally:
+        if holder.advertiser:
+            holder.advertiser.close()
         holder.engine.stop()
 
 

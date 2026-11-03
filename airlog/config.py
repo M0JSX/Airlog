@@ -90,6 +90,8 @@ class Config:
     web_host: str = "0.0.0.0"
     web_port: int = 8080
     web_password: str = ""            # blank = no login (trusted LAN only)
+    trusted_lan: bool = False         # no password: let any machine on the network change settings
+    announce: bool = True             # advertise on the LAN (mDNS) so Airlog Viewer can find it
 
     # Unknown keys from newer/older versions are preserved here.
     extra: dict = field(default_factory=dict)

@@ -40,7 +40,7 @@ if (-not (Test-Path ".build\venv\Scripts\python.exe")) {
 }
 $vpy = ".build\venv\Scripts\python.exe"
 & $vpy -m pip install --quiet --upgrade pip
-& $vpy -m pip install --quiet "pyinstaller>=6.6" "flask>=2.2" waitress pywin32 shazamio
+& $vpy -m pip install --quiet "pyinstaller>=6.6" "flask>=2.2" waitress pywin32 shazamio zeroconf keyring
 & $vpy -c "import tkinter" ; if ($LASTEXITCODE) { throw "This Python has no tkinter. Reinstall Python with 'tcl/tk' ticked." }
 
 # ---------------------------------------------------------------- ffmpeg
@@ -107,6 +107,22 @@ if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path "dist\Airlog" -DestinationPath $zip
 Write-Host "  $zip"
 
+# ---------------------------------------------------------------- Airlog Viewer
+Step "Airlog Viewer"
+if (Test-Path "dist\AirlogViewer") { Remove-Item -Recurse -Force "dist\AirlogViewer" }
+& $vpy -m PyInstaller --noconfirm --clean --distpath dist --workpath .build\pyi-viewer packaging\viewer.spec
+if ($LASTEXITCODE) { throw "PyInstaller (viewer) failed" }
+$vreport = Join-Path (Resolve-Path dist) "selftest-viewer.txt"
+if (Test-Path $vreport) { Remove-Item $vreport }
+Start-Process -FilePath "dist\AirlogViewer\AirlogViewer.exe" -ArgumentList "--selftest", "`"$vreport`"" -Wait
+if (-not (Test-Path $vreport)) { throw "Viewer self-test wrote no report - AirlogViewer.exe failed to start" }
+Get-Content $vreport
+if (-not (Select-String -Path $vreport -Pattern "RESULT  OK" -Quiet)) { throw "Viewer self-test failed (see above)" }
+$vzip = "dist\Airlog-Viewer-$version-win64.zip"
+if (Test-Path $vzip) { Remove-Item $vzip }
+Compress-Archive -Path "dist\AirlogViewer" -DestinationPath $vzip
+Write-Host "  $vzip"
+
 # ---------------------------------------------------------------- installer
 if (-not $NoInstaller) {
     Step "Installer (Inno Setup)"
@@ -120,6 +136,9 @@ if (-not $NoInstaller) {
         & $iscc /Q "/DAppVersion=$version" packaging\installer.iss
         if ($LASTEXITCODE) { throw "Inno Setup failed" }
         Write-Host "  dist\Airlog-Setup-$version.exe"
+        & $iscc /Q "/DAppVersion=$version" packaging\viewer.iss
+        if ($LASTEXITCODE) { throw "Inno Setup (viewer) failed" }
+        Write-Host "  dist\Airlog-Viewer-Setup-$version.exe"
     } else {
         Write-Host "  Inno Setup not installed - skipping Setup.exe (winget install JRSoftware.InnoSetup)" -ForegroundColor DarkYellow
     }
