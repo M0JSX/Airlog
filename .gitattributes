@@ -1,6 +1,7 @@
 * text=auto
-# Runs on the Pi: must keep LF even when checked out on Windows.
+# Shell scripts run on Linux/macOS: must keep LF even when checked out on Windows.
 *.sh text eol=lf
 *.bat text eol=crlf
 *.ico binary
 *.png binary
+*.icns binary

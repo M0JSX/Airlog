@@ -12,19 +12,15 @@ The service runs as LocalSystem, so its settings live machine-wide in
 from __future__ import annotations
 
 import ctypes
-import json
 import os
 import shutil
 import subprocess
 import sys
-import threading
-import time
 import traceback
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-from .config import Config, config_dir, default_data_dir
+from .config import config_dir, default_data_dir
+from .servicecore import NO_WINDOW, config_port, migrate_config, open_window, responding, serve_until, stamp, wait_until
 
 SERVICE_NAME = "AirlogRecorder"
 DISPLAY_NAME = "Airlog Recorder"
@@ -36,12 +32,6 @@ DATA_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Airlog"
 CONFIG = DATA_DIR / "config.json"
 LOG = DATA_DIR / "logs" / "service.log"
 INSTALL_LOG = DATA_DIR / "logs" / "install.log"
-
-NO_WINDOW = 0x08000000
-
-
-def stamp() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _run(cmd: list[str], check: bool = False) -> subprocess.CompletedProcess:
@@ -70,29 +60,6 @@ def _log_to_file() -> None:
     sys.stdout = sys.stderr = f
 
 
-def serve_until(wait) -> None:
-    """Run the recorder and web UI until wait() returns."""
-    from waitress import create_server
-
-    from .server import Holder, create_app
-
-    cfg = Config.load(CONFIG)
-    if not CONFIG.exists():
-        cfg.save(CONFIG)
-    holder = Holder(cfg, CONFIG)
-    if cfg.autostart:
-        holder.engine.start()
-    srv = create_server(create_app(holder), host=cfg.web_host, port=cfg.web_port, threads=12, channel_timeout=600)
-    threading.Thread(target=srv.run, daemon=True, name="web").start()
-    print(f"{stamp()} Service started; UI on port {cfg.web_port}", flush=True)
-    try:
-        wait()
-    finally:
-        print(f"{stamp()} Service stopping", flush=True)
-        srv.close()
-        holder.engine.stop()
-
-
 def run_service() -> None:
     import servicemanager
     import win32event
@@ -113,7 +80,7 @@ def run_service() -> None:
 
         def SvcDoRun(self):
             try:
-                serve_until(lambda: win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE))
+                serve_until(CONFIG, lambda: win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE))
             except Exception:
                 traceback.print_exc()
                 os._exit(1)   # die so the SCM recovery policy restarts us
@@ -136,32 +103,6 @@ def service_state() -> str | None:
     return "UNKNOWN"
 
 
-def service_port() -> int:
-    try:
-        return int(json.loads(CONFIG.read_text(encoding="utf-8")).get("web_port", 8080))
-    except (OSError, ValueError):
-        return 8080
-
-
-def responding(port: int, timeout: float = 2) -> bool:
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=timeout):
-            return True
-    except urllib.error.HTTPError as e:
-        return e.code == 401          # password protected, but it's up
-    except OSError:
-        return False
-
-
-def wait_until(pred, secs: float) -> bool:
-    deadline = time.time() + secs
-    while time.time() < deadline:
-        if pred():
-            return True
-        time.sleep(0.5)
-    return pred()
-
-
 # ---------------------------------------------------------------- install / uninstall (elevated)
 def is_admin() -> bool:
     try:
@@ -174,21 +115,6 @@ def _stop_service() -> None:
     if service_state() not in (None, "STOPPED"):
         _run(["sc.exe", "stop", SERVICE_NAME])
         wait_until(lambda: service_state() in (None, "STOPPED"), 30)
-
-
-def _migrate_config(from_config: Path | None, data_dir: Path | None) -> None:
-    """First install: carry the desktop app's settings over to the machine-wide config."""
-    if CONFIG.exists():
-        return
-    data = data_dir or default_data_dir()
-    from_config = from_config or config_dir() / "config.json"   # e.g. run by Setup.exe: the installing user's
-    if from_config.exists():
-        cfg = Config.load(from_config)
-    else:
-        cfg = Config(archive_dir=str(data / "Archive"), grabs_dir=str(data / "Grabs"))
-    if not cfg.spool_dir:   # LocalSystem's home is inside System32; pin the buffer to the user's data folder
-        cfg.spool_dir = str(data / ".spool")
-    cfg.save(CONFIG)
 
 
 def _shortcuts(exe: Path, create: bool) -> None:
@@ -211,7 +137,7 @@ def install(from_config: Path | None, data_dir: Path | None, shortcuts: bool = T
     if src.resolve() != INSTALL_DIR.resolve():
         shutil.copytree(src, INSTALL_DIR, dirs_exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _migrate_config(from_config, data_dir)
+    migrate_config(CONFIG, from_config or config_dir() / "config.json", data_dir or default_data_dir())
 
     bin_path = f'"{exe}" --service'
     if service_state() is None:
@@ -229,7 +155,7 @@ def install(from_config: Path | None, data_dir: Path | None, shortcuts: bool = T
     if "(A;;CCLCSWLOCRRC;;;IU)" in sd:
         _run(["sc.exe", "sdset", SERVICE_NAME, sd.replace("(A;;CCLCSWLOCRRC;;;IU)", "(A;;CCLCSWRPWPDTLOCRRC;;;IU)")])
 
-    port = service_port()
+    port = config_port(CONFIG)
     _powershell(f"Get-NetFirewallRule -DisplayName {_ps_quote(FIREWALL_RULE)} -ErrorAction SilentlyContinue | "
                 f"Remove-NetFirewallRule; New-NetFirewallRule -DisplayName {_ps_quote(FIREWALL_RULE)} -Direction Inbound "
                 f"-Action Allow -Program {_ps_quote(exe)} -Protocol TCP -LocalPort {port} -Profile Private,Domain | Out-Null")
@@ -288,25 +214,6 @@ def msgbox(text: str, flags: int = MB_ICONINFO) -> int:
     return ctypes.windll.user32.MessageBoxW(None, text, "Airlog", flags)
 
 
-def find_edge() -> str | None:
-    for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA")):
-        if base:
-            p = Path(base) / "Microsoft/Edge/Application/msedge.exe"
-            if p.exists():
-                return str(p)
-    return shutil.which("msedge")
-
-
-def open_window(port: int) -> None:
-    url = f"http://localhost:{port}/"
-    edge = find_edge()
-    if edge:
-        subprocess.Popen([edge, f"--app={url}", "--window-size=1400,900"], creationflags=NO_WINDOW)
-    else:
-        import webbrowser
-        webbrowser.open(url)
-
-
 def install_with_prompt() -> bool:
     if msgbox("The Airlog Recorder service isn't installed.\n\n"
               "Install it now? It records in the background from boot, whether or not this window is open. "
@@ -323,7 +230,7 @@ def install_with_prompt() -> bool:
 
 
 def launch_ui() -> int:
-    port = service_port()
+    port = config_port(CONFIG)
     if responding(port):
         open_window(port)
         return 0
@@ -331,7 +238,7 @@ def launch_ui() -> int:
     if state is None:
         if not install_with_prompt():
             return 1
-        port = service_port()
+        port = config_port(CONFIG)
     elif state != "RUNNING":
         _run(["sc.exe", "start", SERVICE_NAME])
     if not wait_until(lambda: responding(port), 30):

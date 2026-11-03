@@ -1,8 +1,8 @@
-"""Self-test for packaged builds:  Airlog.exe --selftest result.txt
+"""Self-test for packaged builds:  Airlog --selftest result.txt
 
 Checks Tk, the bundled ffmpeg, and runs a 4-second capture from a test tone
 through the real engine, then grabs 1 second. Writes a report and exits 0/1.
-Used by the Windows build to verify the .exe before it's published.
+Used by the Windows, Linux and macOS builds to verify the app before it's published.
 """
 from __future__ import annotations
 
@@ -101,10 +101,17 @@ def run(report: Path) -> int:
             if icon.status_code != 200:
                 raise RuntimeError(f"/favicon.ico returned {icon.status_code}")
             detail = f"UI page {len(page.data)} bytes, /api/status OK"
+            import waitress  # noqa: F401  (service host)
             if sys.platform.startswith("win"):
-                import servicemanager, win32serviceutil  # noqa: F401,E401  (service host)
-                import waitress  # noqa: F401
-                detail += ", service modules OK"
+                import servicemanager, win32serviceutil  # noqa: F401,E401
+                from . import winservice  # noqa: F401
+            else:
+                from . import unixservice
+                if sys.platform == "darwin":
+                    import plistlib  # noqa: F401
+                elif "ExecStart=" not in unixservice._unit_text("nobody", ["/opt/airlog/Airlog"]):
+                    raise RuntimeError("systemd unit text is wrong")
+            detail += ", service modules OK"
             return detail
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

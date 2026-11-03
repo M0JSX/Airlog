@@ -1,0 +1,118 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to attach files to a GitHub release on tag pushes
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup if missing
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build, self-test and package
+        shell: pwsh
+        run: ./build_windows.ps1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Airlog-windows-x64
+          path: |
+            dist/Airlog-*.zip
+            dist/Airlog-Setup-*.exe
+            dist/selftest.txt
+          if-no-files-found: error
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    # Built on Debian 12 (glibc 2.36) so the binaries run on Debian 12+, Raspberry Pi OS 12+,
+    # Ubuntu 23.04+ and other distros of that age or newer.
+    container: python:3.12-bookworm
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends xvfb xauth binutils dpkg-dev curl xz-utils unzip
+
+      - name: Build, self-test and package
+        run: ./build_unix.sh
+
+      - name: Unit tests
+        run: |
+          export PATH="$(ls -d "$PWD"/.build/ffmpeg-linux-*):$PATH"
+          for t in tests/test_*.py; do .build/venv-linux-*/bin/python "$t"; done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Airlog-linux-${{ matrix.arch }}
+          path: |
+            dist/Airlog-*.tar.gz
+            dist/airlog_*.deb
+            dist/selftest-*.txt
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest   # Apple Silicon
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build, self-test and package
+        run: ./build_unix.sh
+        env:
+          PYTHON: python
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Airlog-macos-arm64
+          path: |
+            dist/Airlog-*.dmg
+            dist/selftest-*.txt
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            artifacts/Airlog-*.zip
+            artifacts/Airlog-Setup-*.exe
+            artifacts/Airlog-*.tar.gz
+            artifacts/airlog_*.deb
+            artifacts/Airlog-*.dmg

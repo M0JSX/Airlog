@@ -29,10 +29,11 @@ from .engine import Engine
 WEB_DIR = Path(__file__).with_name("web")
 AUDIO_EXT = {".mp3", ".flac", ".wav", ".ogg"}
 
-# Settings the browser may edit (everything else stays file-only).
+# Settings the browser may edit (everything else stays file-only). ffmpeg_path is deliberately
+# file-only: whoever can set it can run any program on the recorder.
 EDITABLE = [
     "station_name", "source_type", "stream_url", "device_backend", "device_name", "custom_input_args",
-    "ffmpeg_path", "source_delay_s", "sample_rate", "channels",
+    "source_delay_s", "sample_rate", "channels",
     "archive_enabled", "archive_dir", "archive_pattern", "archive_format", "archive_bitrate_kbps",
     "split_minutes", "archive_keep_days",
     "buffer_minutes", "spool_dir", "grabs_dir", "grab_format", "grab_pattern", "grab_preroll_s",
@@ -72,6 +73,18 @@ def tz_offset(t: float) -> float:
     return off.total_seconds() if off else 0.0
 
 
+ADMIN_REFUSED = ("Changing settings or starting/stopping the recorder from another machine needs a web "
+                 "password. Set one in Settings on the recorder itself (http://localhost:<port>/), "
+                 "then sign in here.")
+
+
+def is_local_request() -> bool:
+    """A browser on the recorder itself, not via a reverse proxy (which would look local too)."""
+    if request.headers.get("X-Forwarded-For") or request.headers.get("Forwarded") or request.headers.get("X-Real-IP"):
+        return False
+    return request.remote_addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
 def safe_child(root: Path, rel: str) -> Path:
     root = root.resolve()
     p = (root / rel).resolve()
@@ -102,6 +115,18 @@ def create_app(holder: Holder) -> Flask:
 
     def err(msg: str, code: int = 400):
         return jsonify(error=msg), code
+
+    def can_admin() -> bool:
+        """Settings and record control: anyone who passed the password check, or, with no password
+        set, only a browser on the recorder itself. Grabbing and listening stay open to the LAN."""
+        return bool(holder.cfg.web_password) or is_local_request()
+
+    def audio_file(root: Path, rel: str) -> Path:
+        """Only audio files are served or deleted, whatever the folder settings point at."""
+        p = safe_child(root, rel)
+        if p.suffix.lower() not in AUDIO_EXT or not p.is_file():
+            abort(404)
+        return p
 
     def ftime(name: str) -> float:
         v = request.values.get(name)
@@ -158,6 +183,7 @@ def create_app(holder: Holder) -> Flask:
             identify_state=e.recognizer.state if e.recognizer else "off",
             now_playing=asdict(cur) if (cur := e.tracks.current()) else None,
             tracks_rev=e.tracks.rev,
+            can_edit=can_admin(),
         )
 
     @app.get("/api/tracks")
@@ -245,9 +271,7 @@ def create_app(holder: Holder) -> Flask:
 
     @app.delete("/api/grabs/<path:rel>")
     def delete_grab(rel):
-        p = safe_child(Path(holder.cfg.grabs_dir), rel)
-        if not p.is_file():
-            return err("not found", 404)
+        p = audio_file(Path(holder.cfg.grabs_dir), rel)
         p.unlink()
         return jsonify(ok=True)
 
@@ -267,23 +291,21 @@ def create_app(holder: Holder) -> Flask:
 
     @app.get("/files/grabs/<path:rel>")
     def grab_file(rel):
-        p = safe_child(Path(holder.cfg.grabs_dir), rel)
-        if not p.is_file():
-            abort(404)
+        p = audio_file(Path(holder.cfg.grabs_dir), rel)
         return send_file(p, as_attachment=bool(request.args.get("download")), download_name=p.name,
                          conditional=True)
 
     @app.get("/files/archive/<path:rel>")
     def archive_file(rel):
-        p = safe_child(Path(holder.cfg.archive_dir), rel)
-        if not p.is_file():
-            abort(404)
+        p = audio_file(Path(holder.cfg.archive_dir), rel)
         return send_file(p, as_attachment=bool(request.args.get("download")), download_name=p.name,
                          conditional=True)
 
     # ---------------------------------------------------------------- control & settings
     @app.post("/api/record")
     def record():
+        if not can_admin():
+            return err(ADMIN_REFUSED, 403)
         action = (request.get_json(silent=True) or {}).get("action")
         e = holder.engine
         if action == "start":
@@ -299,11 +321,13 @@ def create_app(holder: Holder) -> Flask:
         d = asdict(holder.cfg)
         out = {k: d[k] for k in EDITABLE}
         out["web_password"] = "********" if holder.cfg.web_password else ""
-        return jsonify(config=out, backends=sources.BACKENDS, default_backend=sources.default_backend(),
+        return jsonify(config=out, can_edit=can_admin(), backends=sources.BACKENDS, default_backend=sources.default_backend(),
                        ffmpeg=sources.ffmpeg_version(holder.cfg.ffmpeg_path))
 
     @app.post("/api/config")
     def set_config():
+        if not can_admin():
+            return err(ADMIN_REFUSED, 403)
         data = request.get_json(silent=True) or {}
         cfg = holder.cfg
         for k, v in data.items():
