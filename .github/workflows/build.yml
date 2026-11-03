@@ -110,8 +110,11 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # Creates the release (with generated notes) only now, with every package attached at once.
       - uses: softprops/action-gh-release@v3
         with:
+          name: Airlog ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
             artifacts/Airlog-*.zip
             artifacts/Airlog-Setup-*.exe
