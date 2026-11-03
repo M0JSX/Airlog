@@ -154,10 +154,16 @@ card doesn't wear out.
 
 Several people can use the UI at once; each browser has its own selection.
 
-**Access:** set **Settings → Web password** to require a login (HTTP Basic).
-Leave it blank only on a trusted studio LAN. For access from outside the
-building, put it behind a VPN (e.g. WireGuard) or nginx with HTTPS. Don't
-port-forward it.
+**Access:** with no web password, anyone on the network can listen, grab and
+download, but **changing settings and starting/stopping the recorder only work
+from a browser on the recorder itself** (`http://localhost:8080/`, which is what
+the Airlog app opens). Set **Settings → Web password** to require a login (HTTP
+Basic) for everything; signed-in users can then change settings from any
+machine. Whoever can change settings can point Airlog at any folder and run any
+ffmpeg input, so treat the password like an admin password. The ffmpeg path
+itself can only be changed in the config file. The UI only serves and deletes
+audio files. For access from outside the building, put it behind a VPN (e.g.
+WireGuard) or nginx with HTTPS. Don't port-forward it.
 
 ## What the recorder does
 
@@ -304,8 +310,8 @@ The browser UI uses these; they're handy for scripting too.
 | `GET /api/grabs`, `DELETE /api/grabs/<path>` | saved grabs |
 | `GET /api/archive[?date=YYYY-MM-DD]` | hourly files |
 | `GET /api/tracks[?limit=200]` | identified songs, newest first (`now_playing` is also in `/api/status`) |
-| `GET/POST /api/config` | settings |
-| `POST /api/record {action: start\|stop}` | control |
+| `GET/POST /api/config` | settings (POST: password or local browser only) |
+| `POST /api/record {action: start\|stop}` | control (password or local browser only) |
 
 For example, to get the last two minutes as an MP3 from a shell:
 
@@ -315,7 +321,14 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
 
 ## Test
 
-`python tests/test_engine.py` fakes the clock (inside the test only) to 8 s
-before the hour, records a tone with a simulated dropout, and checks the split,
-the gap fill and a grab. `python tests/test_nowplaying.py` checks the
-song-change logic against canned Shazam answers (no network).
+- `python tests/test_engine.py` fakes the clock (inside the test only) to 8 s
+  before the hour, records a tone with a simulated dropout, and checks the
+  split, the gap fill and a grab.
+- `python tests/test_boundary.py` checks archive splits across the clocks going
+  back and forward (Linux/macOS).
+- `python tests/test_access.py` checks who may change settings or control
+  recording, and that only audio files are served.
+- `python tests/test_nowplaying.py` checks the song-change logic against canned
+  Shazam answers (no network).
+
+CI runs them all on Linux after each build.

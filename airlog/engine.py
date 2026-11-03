@@ -43,16 +43,16 @@ SEGMENT_S = 60               # spool segment length
 # Helpers
 # ----------------------------------------------------------------------------
 def next_boundary(t: float, split_minutes: int) -> float:
-    """Next local-time boundary strictly after t, e.g. the top of the next hour."""
+    """Next local-time boundary strictly after t, e.g. the top of the next hour.
+
+    Works in real elapsed time from an offset-aware floor, so every file is the same length across
+    clock changes: when the clocks go back the repeated hour gets its own file (named ..._01-00_2),
+    and when they go forward 00:00 is followed by 02:00.
+    """
     m = max(1, int(split_minutes))
-    d = dt.datetime.fromtimestamp(t + 0.001)
-    if m >= 60:
-        floor = d.replace(minute=0, second=0, microsecond=0)
-        nxt = floor + dt.timedelta(minutes=m)
-    else:
-        floor = d.replace(minute=(d.minute // m) * m, second=0, microsecond=0)
-        nxt = floor + dt.timedelta(minutes=m)
-    return nxt.timestamp()
+    d = dt.datetime.fromtimestamp(t + 0.001).astimezone()     # aware: the right offset in the repeated hour
+    floor = d.replace(minute=0 if m >= 60 else (d.minute // m) * m, second=0, microsecond=0)
+    return floor.timestamp() + m * 60
 
 
 def safe_name(s: str) -> str:

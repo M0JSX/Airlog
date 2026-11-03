@@ -327,6 +327,8 @@ function renderStatus(){
   } else $("file").textContent = s.archive_enabled ? "" : "Archive off";
   $("recbtn").textContent = s.running ? "■ Stop" : "● Record";
   $("recbtn").className = s.running ? "" : "rec";
+  $("recbtn").disabled = s.can_edit === false;
+  $("recbtn").title = s.can_edit === false ? "Needs a web password to start/stop from another machine" : "";
   $("silence").textContent = s.silence_s >= s.silence_alert_s ? `⚠ SILENCE ${Math.floor(s.silence_s)}s` : "";
   const lo = s.buffer_start, hi = s.live;
   $("buf").textContent = (lo && hi) ? `Grab buffer ${hms(lo,false)} → ${hms(hi,false)}  (${dur(hi-lo)} of ${s.buffer_minutes} min)  ·  ${s.sample_rate} Hz ${s.channels==2?"stereo":"mono"}` : "Grab buffer empty";
@@ -711,13 +713,12 @@ const FIELDS = [
   ["Source"],
   ["source_type","Source","select",[["stream","Internet stream"],["device","Sound card input"],["custom","Custom ffmpeg input"]]],
   ["stream_url","Stream URL","text",null,"Icecast, Shoutcast, HLS (.m3u8), .pls / .m3u","stream"],
-  ["device_backend","Driver","select","backends","On the Pi use alsa","device"],
+  ["device_backend","Driver","select","backends","Linux service: use alsa","device"],
   ["device_name","Input","device",null,"Pick from the list, or type e.g. plughw:1,0","device"],
   ["custom_input_args","ffmpeg input args","text",null,'e.g. -f lavfi -i "sine=f=440"  or  -i srt://host:9000',"custom"],
   ["source_delay_s","Source delay (s)","number",null,"How far the source runs behind air; shifts timestamps and file splits back"],
   ["sample_rate","Sample rate","select",[[44100,"44100"],[48000,"48000"]]],
   ["channels","Channels","select",[[2,"Stereo"],[1,"Mono"]]],
-  ["ffmpeg_path","ffmpeg path","text"],
   ["Hourly archive"],
   ["archive_enabled","Record archive files","bool"],
   ["archive_dir","Folder","text"],
@@ -728,7 +729,7 @@ const FIELDS = [
   ["archive_keep_days","Delete after (days)","number",null,"0 = keep forever"],
   ["Grabs"],
   ["buffer_minutes","Grab buffer (min)","number",null,"How far back you can grab. ~690 MB/hour at 48 kHz stereo"],
-  ["spool_dir","Buffer folder","text",null,"Blank = ~/Airlog/.spool. Put this on a USB SSD, not the SD card"],
+  ["spool_dir","Buffer folder","text",null,"Blank = .spool in the data folder. On a machine that boots from an SD card, use a USB SSD"],
   ["grab_format","Default format","select",[["wav","WAV"],["mp3","MP3"],["flac","FLAC"]]],
   ["grab_preroll_s","Pre-roll (s)","number",null,"Added before the in-point on downloads and saves"],
   ["grabs_dir","Saved grabs folder","text"],
@@ -761,6 +762,11 @@ async function openSettings(){
     f.insertAdjacentHTML("beforeend", `<div class="frow" data-only="${only || ""}"><label for="f_${k}">${label}</label>${input}${hint ? `<div class="hint">${hint}</div>` : ""}</div>`);
   }
   f.insertAdjacentHTML("beforeend", `<div class="dim" style="font-size:12px;margin-top:10px">${r.ffmpeg ? "ffmpeg " + r.ffmpeg + " found on the recorder" : "<span class='bad'>ffmpeg not found on the recorder</span>"}</div>`);
+  if (!r.can_edit){
+    f.insertAdjacentHTML("afterbegin", `<div class="bad" style="font-size:13px;margin-bottom:10px">Read-only: changing settings from another machine needs a web password. Set one in Settings on the recorder itself (http://localhost:${location.port || 80}/), then sign in here.</div>`);
+    f.querySelectorAll("input,select,button").forEach(x => x.disabled = true);
+  }
+  $("savecfg").disabled = !r.can_edit;
   $("f_source_type").onchange = syncSource;
   $("f_device_backend").onchange = refreshDevices;
   $("devrefresh").onclick = e => { e.preventDefault(); refreshDevices(); };

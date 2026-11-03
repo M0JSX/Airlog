@@ -62,6 +62,11 @@ jobs:
       - name: Build, self-test and package
         run: ./build_unix.sh
 
+      - name: Unit tests
+        run: |
+          export PATH="$(ls -d "$PWD"/.build/ffmpeg-linux-*):$PATH"
+          for t in tests/test_*.py; do .build/venv-linux-*/bin/python "$t"; done
+
       - uses: actions/upload-artifact@v7
         with:
           name: Airlog-linux-${{ matrix.arch }}
