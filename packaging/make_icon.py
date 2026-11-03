@@ -1,4 +1,4 @@
-"""Generates airlog/assets/icon.png and packaging/airlog.ico (run once; outputs are committed)."""
+"""Generates airlog/assets/icon.png, packaging/airlog.ico and packaging/airlog.icns (run once; outputs are committed)."""
 import math
 from pathlib import Path
 from PIL import Image, ImageDraw
@@ -30,4 +30,5 @@ def draw(size: int) -> Image.Image:
 big = draw(256)
 big.save(ROOT / "airlog" / "assets" / "icon.png")
 big.save(ROOT / "packaging" / "airlog.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+draw(1024).save(ROOT / "packaging" / "airlog.icns")      # macOS app icon (Pillow writes every size from 1024)
 print("icons written")
