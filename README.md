@@ -19,6 +19,9 @@ app on the recorder itself shows the same UI in its own window.
 Every build bundles ffmpeg, so the machine needs nothing else. There's also a
 classic all-in-one desktop window (`--classic`) for quick use on one machine.
 
+On the machines that *use* the recorder, install **[Airlog Viewer](#airlog-viewer)**:
+it finds the recorders on the network and opens them in a window.
+
 ## Install
 
 ### Windows
@@ -128,6 +131,40 @@ continuously. On a machine booting from an SD card (e.g. a Raspberry Pi), point
 **Settings → Buffer folder** and the archive/grabs folders at a USB SSD so the
 card doesn't wear out.
 
+## Airlog Viewer
+
+A small app for the PCs and Macs that grab audio from a recorder. It records
+nothing itself.
+
+- Lists the recorders on your network automatically (they announce themselves
+  with mDNS / Bonjour), plus any you add by address (`192.168.1.20`,
+  `studio-pc`, `studio-pc:9000`; port 8080 if you leave it out). You can save
+  several and switch between them.
+- Shows whether each one is up and recording.
+- **Open** (or double-click) opens the recorder's UI in a Chrome or Edge app
+  window, or your default browser if neither is installed (untick *Open in an
+  app window* to always use the default browser). Downloads land in that
+  browser's Downloads folder.
+- If a recorder has a web password, the viewer asks once, can keep it in the
+  keychain (Windows Credential Manager, macOS Keychain, or GNOME Keyring /
+  KWallet on Linux), and opens the UI already signed in. It never puts the
+  password in a URL: it gets a single-use, 60-second sign-in link instead,
+  and the browser stays signed in for 30 days.
+- A saved recorder found by its network name follows it if its IP address changes.
+- `AirlogViewer --open "Studio A"` (or an address) opens one straight away,
+  for a desktop shortcut.
+
+| | Download |
+|---|---|
+| **Windows** | `Airlog-Viewer-Setup-<ver>.exe` (installs for the current user, no admin) or `Airlog-Viewer-<ver>-win64.zip` |
+| **Linux** | `sudo apt install ./airlog-viewer_<ver>_<arch>.deb`, or unpack `Airlog-Viewer-<ver>-linux-<arch>.tar.gz` and run `AirlogViewer/AirlogViewer` |
+| **macOS** | `Airlog-Viewer-<ver>-macos-arm64.dmg`: drag to Applications. Unsigned, so the first time use **Open Anyway** in Privacy & Security. On macOS 14+ allow *Local Network* access when asked, or it can't find recorders |
+
+Automatic discovery needs multicast to pass between the viewer and the
+recorder, so it works on one LAN or VLAN but usually not across routers or a
+VPN. Add those recorders by address. **Settings → Announce on the network**
+turns the announcement off.
+
 ## Using the browser UI
 
 - **Waveform:** shows the last 1 minute to 2 hours, following live.
@@ -154,15 +191,22 @@ card doesn't wear out.
 
 Several people can use the UI at once; each browser has its own selection.
 
-**Access:** with no web password, anyone on the network can listen, grab and
-download, but **changing settings and starting/stopping the recorder only work
-from a browser on the recorder itself** (`http://localhost:8080/`, which is what
-the Airlog app opens). Set **Settings → Web password** to require a login (HTTP
-Basic) for everything; signed-in users can then change settings from any
-machine. Whoever can change settings can point Airlog at any folder and run any
-ffmpeg input, so treat the password like an admin password. The ffmpeg path
-itself can only be changed in the config file. The UI only serves and deletes
-audio files. For access from outside the building, put it behind a VPN (e.g.
+**Access:** with no web password, anyone who can reach the UI can listen, grab
+and download, but **changing settings and starting/stopping the recorder only
+work from a browser on the recorder itself** (`http://localhost:8080/`, which is
+what the Airlog app opens). Two ways to allow it from other machines:
+
+- **Settings → Trusted network**: no password; any machine that can reach the
+  UI may change settings and start/stop recording. Fine on a LAN behind a
+  firewall with nothing forwarded to it.
+- **Settings → Web password**: everything needs a login (HTTP Basic in a
+  browser; Airlog Viewer signs in for you), and signed-in users can change
+  settings from anywhere.
+
+Whoever can change settings can point Airlog at any folder and run any ffmpeg
+input, so give that ability only to people and networks you trust. The ffmpeg
+path itself can only be changed in the config file, and the UI only serves and
+deletes audio files. For access from outside the building, use a VPN (e.g.
 WireGuard) or nginx with HTTPS. Don't port-forward it.
 
 ## What the recorder does
@@ -235,9 +279,12 @@ double-click **`build_windows.bat`** (or run `.\build_windows.ps1`). It:
 4. **self-tests the exe** (`Airlog.exe --selftest`): Tk, the bundled ffmpeg,
    and a real 4-second capture, archive file and grab;
 5. writes `dist\Airlog-<version>-win64.zip` (portable, unzip and run);
-6. if Inno Setup is installed (`winget install JRSoftware.InnoSetup`), also
+6. builds and self-tests Airlog Viewer and writes
+   `dist\Airlog-Viewer-<version>-win64.zip`;
+7. if Inno Setup is installed (`winget install JRSoftware.InnoSetup`), also
    writes `dist\Airlog-Setup-<version>.exe`, an admin installer that puts Airlog
-   in Program Files and installs the service.
+   in Program Files and installs the service, and
+   `dist\Airlog-Viewer-Setup-<version>.exe`, a per-user viewer installer.
 
 The exe isn't code-signed, so Windows SmartScreen will warn on first run
 (*More info → Run anyway*).
@@ -257,7 +304,9 @@ On the machine type you're building for (the build is for its own CPU), run
 4. **self-tests the build** the same way as the Windows exe;
 5. writes `dist/Airlog-<version>-linux-<arch>.tar.gz` and
    `dist/airlog_<version>_<arch>.deb` (skip it with `--no-deb`), or
-   `dist/Airlog-<version>-macos-<arch>.dmg`.
+   `dist/Airlog-<version>-macos-<arch>.dmg`;
+6. builds, self-tests and packages Airlog Viewer the same way
+   (`Airlog-Viewer-…`, `airlog-viewer_…deb`).
 
 A Linux build runs on distros with the same or a newer glibc than the build
 machine, which is why CI builds on Debian 12.
@@ -291,6 +340,7 @@ the checkout where it is).
 | Grabs saved on recorder | `~/Airlog/Grabs/` |
 | Grab buffer | `~/Airlog/.spool` |
 | Settings (service) | Windows: `%ProgramData%\Airlog\config.json` · Linux: `/var/lib/airlog/config.json` · macOS: `~/Library/Application Support/Airlog/service.json` |
+| Airlog Viewer's list | Windows: `%APPDATA%\Airlog\viewer.json` · Linux: `~/.config/airlog/viewer.json` · macOS: `~/Library/Application Support/Airlog/viewer.json` (passwords are in the keychain) |
 | Settings (classic window) | Windows: `%APPDATA%\Airlog\` · Linux: `~/.config/airlog/` · macOS: `~/Library/Application Support/Airlog/config.json` |
 
 File names use strftime codes plus `{station}`; a `/` creates sub-folders. The
@@ -310,8 +360,9 @@ The browser UI uses these; they're handy for scripting too.
 | `GET /api/grabs`, `DELETE /api/grabs/<path>` | saved grabs |
 | `GET /api/archive[?date=YYYY-MM-DD]` | hourly files |
 | `GET /api/tracks[?limit=200]` | identified songs, newest first (`now_playing` is also in `/api/status`) |
-| `GET/POST /api/config` | settings (POST: password or local browser only) |
-| `POST /api/record {action: start\|stop}` | control (password or local browser only) |
+| `GET/POST /api/config` | settings (POST: signed in, local browser, or *Trusted network*) |
+| `POST /api/record {action: start\|stop}` | control (as above) |
+| `POST /api/login {password}` | single-use sign-in token for `GET /login?t=` (used by Airlog Viewer) |
 
 For example, to get the last two minutes as an MP3 from a shell:
 
@@ -327,7 +378,9 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
 - `python tests/test_boundary.py` checks archive splits across the clocks going
   back and forward (Linux/macOS).
 - `python tests/test_access.py` checks who may change settings or control
-  recording, and that only audio files are served.
+  recording (including *Trusted network*), and that only audio files are served.
+- `python tests/test_login.py` checks Airlog Viewer's one-time sign-in links
+  and the session cookie.
 - `python tests/test_nowplaying.py` checks the song-change logic against canned
   Shazam answers (no network).
 

@@ -142,6 +142,16 @@ def run(report: Path) -> int:
     check("engine", engine_check)
     check("web", web_check)
     check("identify", identify_check)
+
+    def discovery_check():
+        import zeroconf
+        from zeroconf import ServiceInfo
+        from . import discovery
+        ServiceInfo(discovery.SERVICE_TYPE, "Selftest." + discovery.SERVICE_TYPE, port=8080,
+                    parsed_addresses=discovery._lan_ipv4() or ["127.0.0.1"], properties={"station": "x"})
+        return f"zeroconf {zeroconf.__version__} (network announcement for Airlog Viewer)"
+
+    check("discovery", discovery_check)
     lines.append("RESULT  " + ("OK" if ok else "FAILED"))
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 0 if ok else 1

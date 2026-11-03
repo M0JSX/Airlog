@@ -6,7 +6,10 @@
 #   ./build_unix.sh --no-deb        Linux: skip the .deb
 #
 # Linux  -> dist/Airlog/Airlog, dist/Airlog-<ver>-linux-<arch>.tar.gz, dist/airlog_<ver>_<debarch>.deb
+#           dist/AirlogViewer/AirlogViewer, dist/Airlog-Viewer-<ver>-linux-<arch>.tar.gz,
+#           dist/airlog-viewer_<ver>_<debarch>.deb
 # macOS  -> dist/Airlog.app,    dist/Airlog-<ver>-macos-<arch>.dmg
+#           dist/Airlog Viewer.app, dist/Airlog-Viewer-<ver>-macos-<arch>.dmg
 #
 # Needs Python 3.10+ with tkinter (Linux: apt install python3-venv python3-tk binutils;
 # macOS: python.org Python or brew install python-tk), curl and unzip/xz.
@@ -50,7 +53,7 @@ VENV=.build/venv-$PLAT-$ARCH
 [[ -x "$VENV/bin/python" ]] || "$PY" -m venv "$VENV"
 VPY="$VENV/bin/python"
 "$VPY" -m pip install --quiet --upgrade pip
-"$VPY" -m pip install --quiet "pyinstaller>=6.6" "flask>=2.2" waitress shazamio
+"$VPY" -m pip install --quiet "pyinstaller>=6.6" "flask>=2.2" waitress shazamio zeroconf keyring
 
 # ---------------------------------------------------------------- ffmpeg
 step "ffmpeg"
@@ -235,5 +238,74 @@ else
   echo "  $DMG"
 fi
 
+# ---------------------------------------------------------------- Airlog Viewer
+step "Airlog Viewer"
+rm -rf dist/AirlogViewer "dist/Airlog Viewer.app"
+"$VPY" -m PyInstaller --noconfirm --clean --distpath dist --workpath ".build/pyi-viewer-$PLAT" packaging/viewer.spec
+if [[ $PLAT == macos ]]; then
+  VIEWER_EXE="dist/Airlog Viewer.app/Contents/MacOS/AirlogViewer"
+else
+  VIEWER_EXE=dist/AirlogViewer/AirlogViewer
+fi
+VREPORT="$PWD/dist/selftest-viewer-$PLAT-$ARCH.txt"
+rm -f "$VREPORT"
+${RUN[@]+"${RUN[@]}"} "$VIEWER_EXE" --selftest "$VREPORT" || true
+[[ -f "$VREPORT" ]] || { echo "Viewer self-test wrote no report: the app failed to start"; exit 1; }
+cat "$VREPORT"
+grep -q "RESULT  OK" "$VREPORT" || { echo "Viewer self-test failed (see above)"; exit 1; }
+
+if [[ $PLAT == linux ]]; then
+  VTGZ="dist/Airlog-Viewer-$VERSION-linux-$ARCH.tar.gz"
+  tar -C dist -czf "$VTGZ" AirlogViewer
+  echo "  $VTGZ"
+  if [[ $MAKE_DEB == 1 ]] && command -v dpkg-deb >/dev/null; then
+    PKG=.build/deb/airlog-viewer_${VERSION}_$DEB_ARCH
+    rm -rf "$PKG"
+    mkdir -p "$PKG/DEBIAN" "$PKG/opt" "$PKG/usr/bin" "$PKG/usr/share/applications" \
+             "$PKG/usr/share/icons/hicolor/256x256/apps"
+    cp -a dist/AirlogViewer "$PKG/opt/airlog-viewer"
+    ln -s /opt/airlog-viewer/AirlogViewer "$PKG/usr/bin/airlog-viewer"
+    cp airlog/assets/viewer.png "$PKG/usr/share/icons/hicolor/256x256/apps/airlog-viewer.png"
+    cat > "$PKG/usr/share/applications/airlog-viewer.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Airlog Viewer
+Comment=Find and open Airlog recorders on your network
+Exec=/usr/bin/airlog-viewer
+Icon=airlog-viewer
+Terminal=false
+Categories=AudioVideo;Audio;Network;
+DESKTOP
+    cat > "$PKG/DEBIAN/control" <<CONTROL
+Package: airlog-viewer
+Version: $VERSION
+Architecture: $DEB_ARCH
+Maintainer: Jonathan (M0JSX) <jonathan@m0jsx.radio>
+Installed-Size: $(du -sk "$PKG" | cut -f1)
+Depends: libc6 (>= 2.36)
+Recommends: gnome-keyring | kwalletmanager
+Suggests: chromium | google-chrome-stable | microsoft-edge-stable
+Section: sound
+Priority: optional
+Homepage: https://github.com/M0JSX/airlog
+Description: Find and open Airlog recorders on the network
+ Lists the Airlog recorders on your network and the ones you've saved,
+ shows whether each is recording, and opens its web UI signed in.
+ Records nothing itself.
+CONTROL
+    VDEB="dist/airlog-viewer_${VERSION}_$DEB_ARCH.deb"
+    dpkg-deb --root-owner-group -Zxz --build "$PKG" "$VDEB" >/dev/null
+    echo "  $VDEB"
+  fi
+else
+  VDMG="dist/Airlog-Viewer-$VERSION-macos-$ARCH.dmg"
+  STAGE=.build/dmg-viewer
+  rm -rf "$STAGE" "$VDMG"; mkdir -p "$STAGE"
+  ditto "dist/Airlog Viewer.app" "$STAGE/Airlog Viewer.app"
+  ln -s /Applications "$STAGE/Applications"
+  hdiutil create -quiet -volname "Airlog Viewer $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$VDMG"
+  echo "  $VDMG"
+fi
+
 step "Done"
-ls -lh dist | grep -E 'Airlog-|airlog_|selftest' || true
+ls -lh dist | grep -E 'Airlog-|airlog_|airlog-viewer_|selftest' || true

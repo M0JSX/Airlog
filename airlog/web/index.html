@@ -741,6 +741,8 @@ const FIELDS = [
   ["silence_alert_db","Silence below (dBFS)","number"],
   ["silence_alert_s","…for (seconds)","number"],
   ["web_password","Web password","password",null,"Blank = no login. Takes effect immediately"],
+  ["trusted_lan","Trusted network","bool",null,"With no password: any machine that can reach this page may change settings and start/stop recording. Only on a network you trust"],
+  ["announce","Announce on the network","bool",null,"Lets Airlog Viewer find this recorder automatically (mDNS / Bonjour)"],
 ];
 let cfgCache = null;
 async function openSettings(){
@@ -763,7 +765,7 @@ async function openSettings(){
   }
   f.insertAdjacentHTML("beforeend", `<div class="dim" style="font-size:12px;margin-top:10px">${r.ffmpeg ? "ffmpeg " + r.ffmpeg + " found on the recorder" : "<span class='bad'>ffmpeg not found on the recorder</span>"}</div>`);
   if (!r.can_edit){
-    f.insertAdjacentHTML("afterbegin", `<div class="bad" style="font-size:13px;margin-bottom:10px">Read-only: changing settings from another machine needs a web password. Set one in Settings on the recorder itself (http://localhost:${location.port || 80}/), then sign in here.</div>`);
+    f.insertAdjacentHTML("afterbegin", `<div class="bad" style="font-size:13px;margin-bottom:10px">Read-only: changing settings from another machine needs a web password, or <b>Trusted network</b> turned on. Change that in Settings on the recorder itself (http://localhost:${location.port || 80}/).</div>`);
     f.querySelectorAll("input,select,button").forEach(x => x.disabled = true);
   }
   $("savecfg").disabled = !r.can_edit;

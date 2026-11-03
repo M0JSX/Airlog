@@ -40,6 +40,13 @@ assert post_cfg(PROXIED, {"station_name": "Hacked"}) == 403, "reverse proxy must
 assert holder.cfg.station_name == "T"
 assert c.get("/files/grabs/clip.wav", environ_base=REMOTE).status_code == 200
 
+# "Trusted network" with no password: the LAN may administer too.
+holder.cfg.trusted_lan = True
+assert c.get("/api/status", environ_base=REMOTE).get_json()["can_edit"] is True
+assert post_cfg(REMOTE, {"station_name": "Trusted"}) == 200 and holder.cfg.station_name == "Trusted"
+assert post_cfg(REMOTE, {"trusted_lan": False}) == 200
+assert post_cfg(REMOTE, {"station_name": "Hacked"}) == 403
+
 # ffmpeg_path is never accepted from the browser, even locally.
 assert post_cfg(LOCAL, {"ffmpeg_path": "/bin/sh", "station_name": "Local"}) == 200
 assert holder.cfg.ffmpeg_path == "ffmpeg" and holder.cfg.station_name == "Local"

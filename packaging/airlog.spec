@@ -21,12 +21,12 @@ VERSION = re.search(r'__version__\s*=\s*"([^"]+)"', (ROOT / "airlog" / "__init__
 
 # Song identification (unofficial Shazam client) and its native fingerprinting module.
 shz_datas, shz_bins, shz_hidden = [], [], []
-for pkg in ("shazamio", "shazamio_core"):
+for pkg in ("shazamio", "shazamio_core", "zeroconf", "ifaddr"):   # + mDNS announcement for Airlog Viewer
     d, b, h = collect_all(pkg)
     shz_datas += d; shz_bins += b; shz_hidden += h
 
 hidden = ["airlog.ui", "airlog.settings", "airlog.osutil", "airlog.selftest", "airlog.server",
-          "airlog.servicecore", "airlog.nowplaying", "waitress"]
+          "airlog.servicecore", "airlog.nowplaying", "airlog.discovery", "waitress"]
 if WIN:
     hidden += ["airlog.winservice", "servicemanager", "win32serviceutil", "win32service", "win32event", "win32timezone"]
 else:
@@ -57,7 +57,7 @@ a = Analysis(
     binaries=shz_bins + ff_bins,
     datas=datas + shz_datas,
     hiddenimports=hidden + shz_hidden,
-    excludes=["PIL", "numpy"],
+    excludes=["PIL", "numpy", "airlog.viewer", "keyring"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
