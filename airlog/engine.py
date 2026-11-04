@@ -28,15 +28,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import nowplaying, sources
+from . import nowplaying, outputs, sources
+from .capture import Capture
 from .config import Config
 
 NO_WINDOW = sources.NO_WINDOW
 BLOCKS_PER_SEC = 10
 GAP_TOLERANCE_S = 1.5        # drift beyond this is treated as a gap / clock correction
 GAP_FILL_MAX_S = 600         # gaps up to this long are filled with silence
-WATCHDOG_S = 20              # no data for this long -> restart the source
 SEGMENT_S = 60               # spool segment length
+STARTUP_GRACE_S = 15         # no failover decisions until both sources have had this long to connect
 
 
 # ----------------------------------------------------------------------------
@@ -330,8 +331,8 @@ class Engine:
         self.ch = cfg.channels
         self.bpf = 2 * self.ch
         self.block_frames = self.sr // BLOCKS_PER_SEC
+        self.block_rate = BLOCKS_PER_SEC
 
-        self.status = "stopped"           # stopped | starting | recording | reconnecting | error
         self.last_error = ""
         self.logs: collections.deque[str] = collections.deque(maxlen=500)
         self.on_log: Callable[[str, bool], None] | None = None
@@ -355,11 +356,21 @@ class Engine:
         self.files_started = 0
 
         self._running = False
-        self._proc: subprocess.Popen | None = None
-        self._thread: threading.Thread | None = None
-        self._last_data = 0.0
         self._pending_new_segment = False
         self._reconnected = False
+
+        # Sources: the main one, and optionally a backup running alongside it (hot standby).
+        self.main = Capture(self, cfg, "main")
+        self.backup = Capture(self, cfg.backup_config(), "backup") if cfg.backup_enabled else None
+        self.active = self.main
+        self.select_lock = threading.RLock()  # held while a block is placed or the source switches
+        self.switches: collections.deque[dict] = collections.deque(maxlen=50)
+        self.on_backup_since: float | None = None
+        self._main_ok_since: float | None = None
+        self._started_mono = 0.0
+
+        # Encoder outputs sending what's recorded on.
+        self.outputs = outputs.OutputSet(self)
 
         if self.spool.segments:
             threading.Thread(target=self._rebuild_peaks, name="peaks", daemon=True).start()
@@ -412,33 +423,66 @@ class Engine:
         if self._running:
             return
         self._running = True
-        self.status = "starting"
-        self._thread = threading.Thread(target=self._supervise, name="capture", daemon=True)
-        self._thread.start()
+        self._started_mono = time.monotonic()
+        self.main.start()
+        if self.backup:
+            self.backup.start()
         threading.Thread(target=self._watchdog, name="watchdog", daemon=True).start()
         threading.Thread(target=self._housekeeping, name="housekeeping", daemon=True).start()
         if self.cfg.identify_songs:
             self.recognizer = nowplaying.Recognizer(self)
             self.recognizer.start()
+        self.outputs.start()
 
     def stop(self) -> None:
         self._running = False
+        self.outputs.stop()
         self.tracks.close(self.live_time() or time.time())
-        p = self._proc
-        if p and p.poll() is None:
-            try:
-                p.terminate()
-            except Exception:
-                pass
-        if self._thread:
-            self._thread.join(timeout=5)
-        self._close_archive()
+        for c in (self.main, self.backup):
+            if c:
+                c.stop()
+        with self.select_lock:
+            self._close_archive()
         self.spool.close()
-        self.status = "stopped"
 
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def status(self) -> str:
+        """stopped | starting | recording | reconnecting | waiting | error, for whichever source is on air."""
+        if not self._running:
+            return "stopped"
+        if self.active.status == "recording":
+            return "recording"
+        return self.main.status if self.active is self.main else self.active.status
+
+    # The main source's details, for the UI and older callers.
+    @property
+    def receiving(self) -> bool:
+        return self.main.receiving
+
+    @property
+    def sender(self) -> str:
+        return self.main.sender
+
+    @property
+    def sender_since(self) -> float:
+        return self.main.sender_since
+
+    @property
+    def _proc(self):
+        return self.main.proc
+
+    def failover_status(self) -> dict | None:
+        if not self.backup:
+            return None
+        def state(c):
+            return {"status": c.status, "source": c.describe(),
+                    "silent_s": round(c.silent_for(), 1), "receiving": c.receiving, "sender": c.sender}
+        return {"active": self.active.role, "since": self.on_backup_since, "main": state(self.main),
+                "backup": state(self.backup), "switches": list(self.switches)[-10:]}
 
     # ------------------------------------------------------------------ timeline
     def live_time(self) -> float | None:
@@ -476,105 +520,111 @@ class Engine:
             j = bisect.bisect_right(self.peak_times, t2)
             return self.peak_times[i:j], self.peak_vals[i:j]
 
-    # ------------------------------------------------------------------ capture loop
-    def _capture_cmd(self) -> list[str]:
-        return [self.cfg.ffmpeg_path, "-hide_banner", "-nostdin", "-loglevel", "warning",
-                *sources.input_args(self.cfg),
-                "-vn", "-sn", "-dn", "-ac", str(self.ch), "-ar", str(self.sr),
-                "-f", "s16le", "pipe:1"]
-
-    def _supervise(self) -> None:
-        backoff = 2.0
-        while self._running:
-            try:
-                cmd = self._capture_cmd()
-            except ValueError as e:
-                self.status = "error"
-                self.log(str(e), error=True)
-                self._sleep(5)
-                continue
-            self.log("Source: " + sources.describe(self.cfg))
-            try:
-                self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                              stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
-            except OSError as e:
-                self.status = "error"
-                self.log(f"Could not run ffmpeg ({self.cfg.ffmpeg_path}): {e}", error=True)
-                self._sleep(10)
-                continue
-            threading.Thread(target=self._pump_stderr, args=(self._proc,), daemon=True).start()
-            self._last_data = time.monotonic()
-            got_any = self._read_loop(self._proc)
-            rc = self._proc.poll()
-            if rc is None:
-                try:
-                    self._proc.kill()
-                except Exception:
-                    pass
-            if not self._running:
-                break
-            self.status = "reconnecting"
-            self.log(f"Source ended (ffmpeg exit {self._proc.returncode}); retrying in {backoff:.0f}s",
-                     error=True)
-            self._sleep(backoff)
-            backoff = 2.0 if got_any else min(backoff * 2, 30.0)
-        self.status = "stopped"
-
     def _sleep(self, s: float) -> None:
         end = time.monotonic() + s
         while self._running and time.monotonic() < end:
             time.sleep(0.2)
 
-    def _pump_stderr(self, proc: subprocess.Popen) -> None:
-        for raw in iter(proc.stderr.readline, b""):
-            line = raw.decode(errors="replace").strip()
-            if line:
-                self.log("ffmpeg: " + line[:300])
+    # ------------------------------------------------------------------ sources and failover
+    def _source_started(self, cap: Capture) -> None:
+        if cap is self.active:
+            self._reconnected = self.t0 is not None
 
-    def _read_loop(self, proc: subprocess.Popen) -> bool:
-        need = self.block_frames * self.bpf
-        got_any = False
-        out = proc.stdout
-        while self._running:
-            data = out.read(need)
-            if not data:
-                break
-            if len(data) % self.bpf:
-                data = data[: len(data) - len(data) % self.bpf]
-                if not data:
-                    continue
-            self._last_data = time.monotonic()
-            if not got_any:
-                got_any = True
-                self._reconnected = self.t0 is not None
-                if self.status != "recording":
-                    self.log("Recording")
-                self.status = "recording"
-            self._on_block(data)
-        return got_any
+    def _ingest(self, cap: Capture, pcm: bytes) -> None:
+        """A block from either source. Every block is kept in that source's recent-audio ring;
+        only the source on air is recorded."""
+        n = len(pcm) // self.bpf
+        t_start = self.now() - cap.delay - n / self.sr
+        cap.ring.append((t_start, pcm))
+        with self.select_lock:
+            if cap is self.active and self._running:
+                self._place(pcm, t_start)
 
     def _watchdog(self) -> None:
         while self._running:
-            time.sleep(1)
-            p = self._proc
-            if (p and p.poll() is None and self.status in ("recording", "starting", "reconnecting")
-                    and time.monotonic() - self._last_data > WATCHDOG_S):
-                self.log(f"No audio for {WATCHDOG_S}s; restarting source", error=True)
-                self._last_data = time.monotonic()
+            time.sleep(0.5)
+            for c in (self.main, self.backup):
+                if c:
+                    c.watchdog_tick()
+            if self.backup:
                 try:
-                    p.kill()
-                except Exception:
-                    pass
+                    self._decide()
+                except Exception as e:  # noqa: BLE001 - never let failover logic kill the watchdog
+                    self.log(f"Failover check failed: {type(e).__name__}: {e}", error=True)
+
+    def _decide(self) -> None:
+        cfg, m, b = self.cfg, self.main, self.backup
+        after = max(1.0, float(cfg.failover_after_s))
+        if not self.main.ever_recorded and time.monotonic() - self._started_mono < max(after + 1, STARTUP_GRACE_S):
+            return                        # at start-up, give the main source time to connect (probing can be slow)
+        silence = float(cfg.failover_silence_s or 0)
+
+        def problem(c: Capture) -> str | None:
+            if c.status != "recording":
+                return {"waiting": "no sender connected", "error": "error"}.get(c.status, "not connected")
+            if not c.fresh(after):
+                return f"no audio for {after:.0f}s"
+            if silence and c.silent_for() >= silence:
+                return f"silent for {silence:.0f}s"
+            return None
+
+        mp, bp = problem(m), problem(b)
+        now = time.monotonic()
+        # Switching back needs the main source *currently* healthy (audio within the last second),
+        # continuously for failover_return_s, so a source that keeps dropping can't flap us back and forth.
+        if mp is None and m.fresh(1.0):
+            self._main_ok_since = self._main_ok_since or now
+        else:
+            self._main_ok_since = None
+        if self.active is m:
+            if mp and bp is None:
+                self._switch(b, f"main source {mp}")
+        else:
+            if mp is None and now - self._main_ok_since >= float(cfg.failover_return_s):
+                self._switch(m, f"main source back for {cfg.failover_return_s}s")
+            elif bp and m.fresh(after):
+                self._switch(m, f"backup source {bp}; main source has audio")
+
+    def _switch(self, to: Capture, reason: str) -> None:
+        with self.select_lock:
+            if to is self.active:
+                return
+            # Record the switch before making it, so anyone who sees the new source also sees why.
+            self.switches.append({"time": time.time(), "to": to.role, "reason": reason})
+            self.on_backup_since = time.time() if to is self.backup else None
+            self.active = to
+            if self.t0 is not None:
+                # Fill the hole since the last recorded audio from the new source's recent audio,
+                # so a dropout leaves seconds of backup in the archive instead of silence.
+                self._reconnected = True
+                end_clock = self.t0 + self.total / self.sr
+                for t_start, pcm in list(to.ring):
+                    n = len(pcm) // self.bpf
+                    if t_start + n / self.sr <= end_clock + 0.001:
+                        continue
+                    skip = max(0, int(round((end_clock - t_start) * self.sr)))
+                    if skip:
+                        pcm, t_start = pcm[skip * self.bpf:], t_start + skip / self.sr
+                    if pcm:
+                        self._place(pcm, t_start)
+                        end_clock = self.t0 + self.total / self.sr
+        self.log(("ON BACKUP SOURCE: " if to is self.backup else "Back on the main source: ") + reason,
+                 error=to is self.backup)
 
     # ------------------------------------------------------------------ per-block processing
-    def _on_block(self, pcm: bytes) -> None:
+    def _on_block(self, pcm: bytes, delay: float | None = None) -> None:
         n = len(pcm) // self.bpf
-        now = self.now() - float(self.cfg.source_delay_s or 0)
+        d = float(self.cfg.source_delay_s or 0) if delay is None else delay
+        self._place(pcm, self.now() - d - n / self.sr)
+
+    def _place(self, pcm: bytes, t_start: float) -> None:
+        """Put a block on the timeline at t_start: fill gaps with silence, relabel if early."""
+        n = len(pcm) // self.bpf
         if self.t0 is None:
-            self.t0 = now - n / self.sr
+            self.t0 = t_start
             self.total = 0
-        end_clock = self.t0 + (self.total + n) / self.sr
-        drift = now - end_clock
+        end_clock = self.t0 + self.total / self.sr
+        drift = t_start - end_clock
         tol = 0.05 if self._reconnected else GAP_TOLERANCE_S
         self._reconnected = False
         if drift > tol:
@@ -624,6 +674,7 @@ class Engine:
                     self._close_archive()
 
         self.spool.write(pcm, start, new_segment=self._pending_new_segment)
+        self.outputs.feed(pcm)
         self._pending_new_segment = False
         self._measure(pcm, start)
         self.total += n

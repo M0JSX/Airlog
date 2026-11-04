@@ -1,8 +1,8 @@
 # Windows version resource for AirlogViewer.exe (PyInstaller format).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 4, 0, 0),
-    prodvers=(1, 4, 0, 0),
+    filevers=(1, 6, 0, 0),
+    prodvers=(1, 6, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -15,12 +15,12 @@ VSVersionInfo(
       StringTable('080904B0', [
         StringStruct('CompanyName', 'Airlog'),
         StringStruct('FileDescription', 'Airlog Viewer: find and open Airlog recorders'),
-        StringStruct('FileVersion', '1.4.0'),
+        StringStruct('FileVersion', '1.6.0'),
         StringStruct('InternalName', 'AirlogViewer'),
         StringStruct('LegalCopyright', 'Airlog'),
         StringStruct('OriginalFilename', 'AirlogViewer.exe'),
         StringStruct('ProductName', 'Airlog Viewer'),
-        StringStruct('ProductVersion', '1.4.0')
+        StringStruct('ProductVersion', '1.6.0')
       ])
     ]),
     VarFileInfo([VarStruct('Translation', [0x0809, 1200])])

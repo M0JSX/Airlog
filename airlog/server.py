@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import datetime as dt
 import hashlib
 import hmac
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory, stream_with_context
 
-from . import __version__, discovery, sources
+from . import __version__, discovery, outputs, sources
 from .config import Config
 from .engine import Engine
 
@@ -41,7 +42,15 @@ EDITABLE = [
     "buffer_minutes", "spool_dir", "grabs_dir", "grab_format", "grab_pattern", "grab_preroll_s",
     "silence_alert_db", "silence_alert_s", "autostart", "web_password",
     "identify_songs", "identify_interval_s", "announce", "trusted_lan",
+    "receive_protocol", "receive_port", "receive_latency_ms", "receive_passphrase", "receive_password",
+    "receive_group", "receive_sdp", "outputs",
+    "backup_enabled", "backup_source_type", "backup_stream_url", "backup_device_backend", "backup_device_name",
+    "backup_custom_input_args", "backup_source_delay_s", "backup_receive_protocol", "backup_receive_port",
+    "backup_receive_latency_ms", "backup_receive_passphrase", "backup_receive_password", "backup_receive_group",
+    "backup_receive_sdp", "failover_after_s", "failover_silence_s", "failover_return_s",
 ]
+SECRET_FIELDS = ("web_password", "receive_password", "receive_passphrase",
+                 "backup_receive_password", "backup_receive_passphrase")   # never sent back to browsers
 
 SESSION_COOKIE = "airlog_session"
 SESSION_DAYS = 30
@@ -258,6 +267,10 @@ def create_app(holder: Holder) -> Flask:
             now_playing=asdict(cur) if (cur := e.tracks.current()) else None,
             tracks_rev=e.tracks.rev,
             can_edit=can_admin(),
+            outputs=e.outputs.status(),
+            failover=e.failover_status(),
+            receive={"protocol": cfg.receive_protocol, "port": cfg.receive_port, "sender": e.sender,
+                     "since": e.sender_since} if cfg.source_type == "receive" else None,
         )
 
     @app.get("/api/tracks")
@@ -394,8 +407,12 @@ def create_app(holder: Holder) -> Flask:
     def get_config():
         d = asdict(holder.cfg)
         out = {k: d[k] for k in EDITABLE}
-        out["web_password"] = "********" if holder.cfg.web_password else ""
-        return jsonify(config=out, can_edit=can_admin(), backends=sources.BACKENDS, default_backend=sources.default_backend(),
+        for k in SECRET_FIELDS:
+            out[k] = "********" if d[k] else ""
+        out["outputs"] = outputs.mask_outputs(d["outputs"])
+        kinds = {k: {"label": outputs.KIND_LABELS[k], "codecs": outputs.CODECS[k], "port": outputs.DEFAULT_PORT[k]}
+                 for k in outputs.KINDS}
+        return jsonify(config=out, can_edit=can_admin(), output_kinds=kinds, backends=sources.BACKENDS, default_backend=sources.default_backend(),
                        ffmpeg=sources.ffmpeg_version(holder.cfg.ffmpeg_path))
 
     @app.post("/api/config")
@@ -404,10 +421,17 @@ def create_app(holder: Holder) -> Flask:
             return err(ADMIN_REFUSED, 403)
         data = request.get_json(silent=True) or {}
         cfg = holder.cfg
+        new = {}
         for k, v in data.items():
             if k not in EDITABLE:
                 continue
-            if k == "web_password" and v == "********":
+            if k in SECRET_FIELDS and v == "********":
+                continue
+            if k == "outputs":
+                try:
+                    new[k] = outputs.normalize_outputs(v, previous=cfg.outputs)
+                except ValueError as ex:
+                    return err(str(ex))
                 continue
             cur = getattr(cfg, k)
             try:
@@ -421,6 +445,31 @@ def create_app(holder: Holder) -> Flask:
                     v = str(v).strip()
             except (TypeError, ValueError):
                 return err(f"bad value for {k}")
+            new[k] = v
+        # Check the combination before applying anything, so a bad save changes nothing.
+        trial = copy.copy(cfg)
+        for k, v in new.items():
+            setattr(trial, k, v)
+        if trial.source_type == "receive":
+            try:
+                sources.receive_args(trial)
+            except ValueError as ex:
+                return err(str(ex))
+        if trial.backup_enabled:
+            b = trial.backup_config()
+            try:
+                if b.source_type == "receive":
+                    sources.receive_args(b)
+                elif b.source_type == "stream" and not b.stream_url.strip():
+                    raise ValueError("enter the stream URL")
+                elif b.source_type == "custom" and "-i" not in b.custom_input_args:
+                    raise ValueError("custom input arguments must contain -i")
+            except ValueError as ex:
+                return err(f"Backup source: {ex}")
+            if (trial.source_type == "receive" and b.source_type == "receive"
+                    and int(trial.receive_port) == int(b.receive_port)):
+                return err("The main and backup sources can't receive on the same port")
+        for k, v in new.items():
             setattr(cfg, k, v)
         cfg.save(holder.cfg_path)
         was = holder.engine.running

@@ -7,6 +7,7 @@ Settings live in a JSON file in the per-user config directory:
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -30,6 +31,12 @@ def default_data_dir() -> Path:
     return Path.home() / "Airlog"
 
 
+# Source settings that the backup source has its own copy of (as backup_<name>).
+BACKUP_KEYS = ("source_type", "stream_url", "device_backend", "device_name", "custom_input_args", "source_delay_s",
+               "receive_protocol", "receive_port", "receive_latency_ms", "receive_passphrase", "receive_password",
+               "receive_group", "receive_sdp")
+
+
 @dataclass
 class Config:
     # --- Station ---
@@ -39,12 +46,22 @@ class Config:
     # "stream"  : internet stream URL (Icecast/Shoutcast/HLS/anything ffmpeg reads)
     # "device"  : sound card input (dshow / avfoundation / pulse / alsa)
     # "custom"  : raw ffmpeg input arguments, for anything else
+    # "receive" : a stream sent *to* Airlog (SRT listener, UDP, RTP or an Icecast-style push)
     source_type: str = "stream"
     stream_url: str = ""
     device_backend: str = ""          # blank = platform default
     device_name: str = ""             # e.g. 'Line In (USB Audio CODEC)', ':0', 'default', 'hw:1,0'
     custom_input_args: str = ""       # e.g. '-f lavfi -i sine=frequency=440'
     ffmpeg_path: str = "ffmpeg"
+
+    # --- Receive a stream (source_type "receive") ---
+    receive_protocol: str = "srt"     # srt | udp | rtp | icecast
+    receive_port: int = 9000
+    receive_latency_ms: int = 200     # SRT
+    receive_passphrase: str = ""      # SRT (10-79 characters, blank = unencrypted)
+    receive_password: str = ""        # Icecast push: the source password senders must use
+    receive_group: str = ""           # UDP/RTP: multicast group to join (blank = unicast)
+    receive_sdp: str = ""             # RTP: SDP from the sender (needed for L16, Opus, AAC)
 
     # Streams arrive behind real time (encoder + server buffering). Set this to
     # the delay in seconds and timestamps/file splits are shifted back to match air.
@@ -93,10 +110,40 @@ class Config:
     trusted_lan: bool = False         # no password: let any machine on the network change settings
     announce: bool = True             # advertise on the LAN (mDNS) so Airlog Viewer can find it
 
+    # --- Backup source: runs alongside the main one and takes over if it fails ---
+    backup_enabled: bool = False
+    backup_source_type: str = "stream"
+    backup_stream_url: str = ""
+    backup_device_backend: str = ""
+    backup_device_name: str = ""
+    backup_custom_input_args: str = ""
+    backup_source_delay_s: float = 0.0
+    backup_receive_protocol: str = "srt"
+    backup_receive_port: int = 9001
+    backup_receive_latency_ms: int = 200
+    backup_receive_passphrase: str = ""
+    backup_receive_password: str = ""
+    backup_receive_group: str = ""
+    backup_receive_sdp: str = ""
+    failover_after_s: float = 5.0     # main gives no audio for this long -> switch to the backup
+    failover_silence_s: int = 60      # main silent this long while the backup isn't -> backup (0 = off)
+    failover_return_s: int = 30       # main healthy again for this long -> switch back
+
+    # --- Encoder outputs: send what's recorded on to Icecast / Shoutcast / SRT / UDP / RTP ---
+    outputs: list = field(default_factory=list)
+
     # Unknown keys from newer/older versions are preserved here.
     extra: dict = field(default_factory=dict)
 
     # ------------------------------------------------------------------
+    def backup_config(self) -> "Config":
+        """The settings the backup source's capture runs with: these, with the source fields swapped."""
+        c = copy.copy(self)
+        for k in BACKUP_KEYS:
+            setattr(c, k, getattr(self, "backup_" + k))
+        c.extra = dict(self.extra, _role="backup")
+        return c
+
     def effective_spool_dir(self) -> Path:
         if self.spool_dir:
             return Path(self.spool_dir)

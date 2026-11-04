@@ -167,7 +167,9 @@ turns the announcement off.
 
 ## Using the browser UI
 
-- **Waveform:** shows the last 1 minute to 2 hours, following live.
+- **Waveform:** shows from 1 minute up to the length of the grab buffer (at most
+  2 hours), following live. You can't scroll back past the oldest audio still in
+  the buffer, since that's as far back as you can grab.
   - Drag to select, drag an edge to adjust, Shift-click to extend.
   - Double-click selects the whole hour.
   - Wheel scrolls; Ctrl+wheel (or trackpad pinch) zooms.
@@ -212,7 +214,14 @@ WireGuard) or nginx with HTTPS. Don't port-forward it.
 ## What the recorder does
 
 - **Source:** an internet stream (Icecast/Shoutcast/HLS/.pls/.m3u), a sound card
-  input, or any custom ffmpeg input (SRT, RTP, a test tone…).
+  input, a stream **sent to** the recorder (SRT, UDP, RTP, or an Icecast-style
+  push; see [Streaming](#streaming-in-and-out)), or any custom ffmpeg input.
+- **Backup source:** a second source runs alongside the main one and takes over
+  automatically if the main source drops out or goes silent, then hands back
+  when it recovers. See [Backup source](#backup-source).
+- **Encoder outputs:** sends what it records on to Icecast/Shoutcast, another
+  Airlog, or an STL codec, at the same time as recording it, with optional
+  compressor and limiter processing per output.
 - **Hourly archive:** MP3/FLAC/WAV/OGG files split exactly on the clock (60, 30
   or 15 minutes). The split is sample-accurate, because Airlog cuts the PCM
   itself.
@@ -228,6 +237,99 @@ WireGuard) or nginx with HTTPS. Don't port-forward it.
   the top of the page. Each song is labelled on the timeline (click a label to
   select the song), and the **Songs** tab lists what played. It works for any
   source, including a sound card. See below.
+
+### Streaming in and out
+
+Airlog can be the far end of a link (**Receive a stream**) and an encoder
+(**Outputs**), so it can log an STL feed, feed your listener stream, or link a
+studio Airlog to one at the transmitter site.
+
+**Receive a stream** (Settings → Source → *Receive a stream*). Senders connect
+to the recorder:
+
+| Receive | Port | Senders |
+|---|---|---|
+| **SRT** | UDP | another Airlog's SRT output, OBS, ffmpeg, SRT-capable STL codecs. Optional passphrase (10–79 characters) and latency (200 ms on a LAN, 1000–2000 ms over the internet) |
+| **Icecast push** | TCP | anything with an Icecast "source" output: BUTT, Mixxx, OBS, playout systems' stream-out, another Airlog's Icecast output. Senders use the **source password**, any user name and any mount. One sender at a time. Like Liquidsoap's *harbor*, without Liquidsoap |
+| **UDP (MPEG-TS)** | UDP | codecs that send MPEG-TS over UDP, unicast or multicast (set the group) |
+| **RTP** | UDP | RTP codecs (Barix and similar). MPEG audio (mp2/mp3) works as is; for PCM/L16, Opus or AAC, paste the sender's SDP |
+
+The status line shows *Waiting for a sender* until audio arrives. When the
+sender stops, the gap is filled with silence and Airlog waits for it to come
+back, like a dropped stream. The receive port has to be open in the recorder's
+firewall:
+
+```bash
+sudo ufw allow 9000/udp        # Linux, SRT/UDP/RTP on port 9000
+sudo ufw allow 8000/tcp        # Linux, Icecast push on port 8000
+sudo firewall-cmd --permanent --add-port=9000/udp && sudo firewall-cmd --reload    # firewalld
+```
+
+On Windows the installer allows any port Airlog.exe listens on (TCP and UDP) on
+private and domain networks. On macOS, allow incoming connections for Airlog if
+asked.
+
+**Outputs** (Settings → Outputs). Add as many as you like; each has its own
+on/off switch and status, shown under the station name (hover for details):
+
+| Output | Codecs | Notes |
+|---|---|---|
+| **Icecast** | MP3, AAC, Ogg Vorbis, Opus | Server, port, mount, source user and password; optional TLS. Sends song titles from song identification (MP3/AAC). Works with Icecast 2.4+ and older servers |
+| **Shoutcast** | MP3, AAC | Shoutcast v1 source protocol (DNAS 1.x, or 2.x with `password:#streamid`). Song titles too |
+| **SRT** | AAC, MP2, MP3, Opus, PCM | **Caller** connects to a receiver (e.g. another Airlog set to *Receive → SRT*); **Listener** waits for the receiver to connect. PCM is uncompressed (SMPTE 302M in MPEG-TS) |
+| **UDP** | AAC, MP2, MP3, Opus, PCM | MPEG-TS, unicast or multicast |
+| **RTP** | PCM (L16), MP2, MP3, Opus, AAC | The output's card in Settings shows the SDP to give the receiver |
+
+An output that can't keep up (slow network, server gone) drops its oldest
+audio and reconnects with a back-off. The recording itself is never held up.
+
+**Processing** (per output, under *Processing* on its card). A compressor and
+peak limiter for that output only; the archive, grabs and other outputs stay
+exactly as they aired:
+
+| Processing | What it does | Quiet / loud gap (measured, from 24 dB) |
+|---|---|---|
+| Off | Nothing | 24 dB |
+| Limiter only | Holds peaks at the ceiling; levels otherwise untouched | 24 dB |
+| Gentle | 2:1 from -18 dBFS: evens out levels, barely audible | 18 dB |
+| Broadcast | 4:1 from -22 dBFS: a consistent, denser "radio" level | 13 dB |
+| Heavy | 8:1 from -28 dBFS: loud and dense, for noisy listening | 6 dB |
+| Custom | Your threshold, ratio, attack, release and make-up gain | — |
+
+The presets keep loud passages at about the level they came in and bring quiet
+ones up. Every setting ends with a peak limiter at the **ceiling** (-1 dBFS by
+default). It limits sample peaks; leave a little headroom for lossy codecs, so
+-1 to -2 dBFS for MP3/AAC streams. It's a broadband compressor, not a
+multiband broadcast processor.
+
+**STL note:** SRT resends lost packets and copes well with a decent internet
+connection, so Airlog to Airlog makes a good backup STL. As the only path to a
+transmitter, a dedicated codec (dual networks, watchdogs, appliance hardware)
+is still the safer choice.
+
+### Backup source
+
+Settings → **Backup source**. The backup is any kind of source (an internet
+stream, a sound card, a received stream, or custom ffmpeg input) and runs
+alongside the main one all the time, so a switch is instant. A typical setup is
+the STL as the main source and the station's web stream as the backup.
+
+- **Switch after no audio for (s)** (default 5): the main source stops
+  delivering audio (dropped stream, sender gone, sound card unplugged).
+- **…or silence for (s)** (default 60; 0 = off): the main source is below the
+  silence level that long while the backup isn't (dead air on the STL).
+- **Switch back after (s)** (default 30): the main source has to be healthy that
+  long, continuously, before Airlog switches back, so a source that keeps
+  dropping can't bounce the recording back and forth.
+- **Backup delay (s)**: like *Source delay*, for the backup. A web stream is
+  usually 10–30 s behind an STL. Set this so the backup's timestamps match air
+  and a switch doesn't repeat or skip audio.
+
+When the main source drops out, the few seconds before the switch are filled
+from the backup's recent audio, so the archive has no hole. The header shows
+**REC · ON BACKUP** in amber, with why and when it switched, and every switch is
+in the log. At start-up the main source gets 15 s to connect before the backup
+takes over.
 
 ### Song identification
 
@@ -353,7 +455,7 @@ The browser UI uses these; they're handy for scripting too.
 
 | | |
 |---|---|
-| `GET /api/status` | state, live time, levels, current file |
+| `GET /api/status` | state, live time, levels, current file, outputs, receive input, failover |
 | `GET /api/peaks?from=&to=&n=` | waveform buckets (0–255) |
 | `GET /api/clip?from=&to=&fmt=wav\|mp3\|flac[&download=1]` | stream a clip (epoch seconds) |
 | `POST /api/grab {from,to,fmt}` | save a clip on the recorder |
@@ -381,6 +483,17 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
   recording (including *Trusted network*), and that only audio files are served.
 - `python tests/test_login.py` checks Airlog Viewer's one-time sign-in links
   and the session cookie.
+- `python tests/test_streaming.py` runs real links with ffmpeg: one Airlog
+  sending a tone over SRT (with and without a passphrase, AAC and PCM), UDP,
+  RTP (with and without SDP) and Icecast push (MP3 and Opus) to another that
+  receives it; plus wrong passwords, the Icecast SOURCE fallback, song titles,
+  Shoutcast v1, and a stalled server not holding up recording.
+- `python tests/test_failover.py` runs a main source it can cut, silence and
+  restore, with a backup tone at a different level: failover on dropout (no
+  hole in the recording), on silence, no flapping, switching back, and starting
+  on the backup when the main never connects.
+- `python tests/test_processing.py` measures every processing preset on a test
+  signal (level gap, peaks vs ceiling) and checks a limited output end to end.
 - `python tests/test_nowplaying.py` checks the song-change logic against canned
   Shazam answers (no network).
 
