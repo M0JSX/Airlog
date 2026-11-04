@@ -589,8 +589,10 @@ class Engine:
         with self.select_lock:
             if to is self.active:
                 return
-            self.active = to
+            # Record the switch before making it, so anyone who sees the new source also sees why.
+            self.switches.append({"time": time.time(), "to": to.role, "reason": reason})
             self.on_backup_since = time.time() if to is self.backup else None
+            self.active = to
             if self.t0 is not None:
                 # Fill the hole since the last recorded audio from the new source's recent audio,
                 # so a dropout leaves seconds of backup in the archive instead of silence.
@@ -606,8 +608,6 @@ class Engine:
                     if pcm:
                         self._place(pcm, t_start)
                         end_clock = self.t0 + self.total / self.sr
-        when = time.time()
-        self.switches.append({"time": when, "to": to.role, "reason": reason})
         self.log(("ON BACKUP SOURCE: " if to is self.backup else "Back on the main source: ") + reason,
                  error=to is self.backup)
 
