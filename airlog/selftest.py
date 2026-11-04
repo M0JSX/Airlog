@@ -171,6 +171,25 @@ def run(report: Path) -> int:
         return "encoders OK; protocols: " + ", ".join(have) + ("" if "srt" in have else " (no SRT in this ffmpeg)")
 
     check("encoders", encoders_check)
+
+    def processing_check():
+        # Every processing preset's filter chain must run on this ffmpeg (crossover, compressors, limiter).
+        import subprocess
+        from . import outputs
+        from .sources import NO_WINDOW
+        for mode in outputs.PROCESSING:
+            if mode == "off":
+                continue
+            o = outputs.normalize_outputs([{"kind": "udp", "host": "h", "processing": mode}])[0]
+            p = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                                "sine=frequency=440:sample_rate=48000:duration=0.5", "-ac", "2",
+                                "-af", outputs.process_filter(o), "-f", "null", "-"],
+                               capture_output=True, text=True, creationflags=NO_WINDOW)
+            if p.returncode:
+                raise RuntimeError(f"{mode}: {p.stderr.strip()[:200]}")
+        return f"{len(outputs.PROCESSING) - 1} processing chains run"
+
+    check("processing", processing_check)
     lines.append("RESULT  " + ("OK" if ok else "FAILED"))
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 0 if ok else 1

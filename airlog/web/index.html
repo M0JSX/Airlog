@@ -67,7 +67,10 @@ th{color:var(--dim);font-weight:500}
 td.act{text-align:right;white-space:nowrap}
 tr.writing td{color:var(--amber)}
 #log{background:var(--panel);font:12px var(--mono);color:var(--dim);padding:10px;height:260px;overflow:auto;white-space:pre;border-radius:6px}
-#player{width:100%;margin-top:8px;display:none}
+#player{width:100%;margin-top:4px;display:none}
+#playbar{display:none;align-items:center;gap:10px;margin-top:8px}
+#playname{color:var(--dim);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+button.playing{color:var(--amber);border-color:var(--amber)}
 
 footer{display:flex;justify-content:space-between;color:var(--dim);font-size:12px;padding:6px 18px;background:var(--panel)}
 
@@ -194,6 +197,7 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
       <table><thead><tr><th>File</th><th>Modified</th><th>Size</th><th></th></tr></thead><tbody id="archrows"></tbody></table>
     </div>
     <div class="tabbody" id="tab-log"><div id="log"></div></div>
+    <div id="playbar"><button class="small" id="stopplay" title="Stop playback">■ Stop</button><span id="playname"></span></div>
     <audio id="player" controls></audio>
   </div>
 </main>
@@ -392,6 +396,9 @@ function renderStatus(){
     `<br>Pre-roll on downloads: ${s.grab_preroll_s}s`;
   renderNowPlaying();
   if (s.tracks_rev !== tracksRev){ tracksRev = s.tracks_rev; loadTracks(); }
+  else if (performance.now() - (renderStatus.songsAt || 0) > 10000 && document.querySelector(".tab.on").dataset.tab === "songs"){
+    renderStatus.songsAt = performance.now(); renderSongs();      // drop songs as the buffer moves past them
+  }
   if (!$("fmt").dataset.set){ $("fmt").value = s.grab_format; $("fmt").dataset.set = 1; }
 }
 
@@ -600,9 +607,32 @@ async function saveOnServer(){
     msg("✓ Saved " + res.name + " on the recorder", "ok"); loadGrabs();
   } catch(e){ msg("✗ " + e.message, "bad"); }
 }
+// Archive / saved-grab playback: a Stop button by the player, and the playing row's ▶ becomes ■.
+function stopPlayer(){
+  const p = $("player");
+  p.pause();
+  p.removeAttribute("src"); p.load();          // drop the file so it stops downloading too
+  delete p.dataset.url;
+  p.style.display = "none";
+  syncPlayButtons();
+}
+function syncPlayButtons(){
+  const p = $("player"), url = p.dataset.url, on = url && !p.paused;
+  document.querySelectorAll("[data-play]").forEach(b => {
+    const me = on && b.dataset.play === url;
+    b.textContent = me ? "■" : "▶";
+    b.title = me ? "Stop" : "Play";
+    b.classList.toggle("playing", !!me);
+  });
+  $("playbar").style.display = url ? "flex" : "none";
+}
+$("stopplay").onclick = stopPlayer;
+["play", "pause", "ended"].forEach(ev => $("player").addEventListener(ev, syncPlayButtons));
+
 function preview(){
   const pv = $("prev");
   if (!pv.paused){ pv.pause(); $("preview").textContent = "▶ Preview"; return; }
+  if ($("player").dataset.url) stopPlayer();
   const r = range(); if (!r) return;
   pv.src = clipUrl(r[0], r[1], "mp3", "&kbps=128"); pv.dataset.from = r[0];
   pv.play().then(() => $("preview").innerHTML = "■ Stop <kbd>P</kbd>").catch(e => msg("Preview failed: " + e.message, "bad"));
@@ -701,8 +731,10 @@ async function loadTracks(){
   if (document.querySelector(".tab.on").dataset.tab === "songs") renderSongs();
 }
 function renderSongs(){
+  // The list matches the grab buffer: songs that have fully dropped out of it aren't shown.
   const lo = bufStart();
-  $("songrows").innerHTML = tracks.map((tr, i) => {
+  const shown = tracks.map((tr, i) => [tr, i]).filter(([tr]) => lo == null || (tr.end ?? live() ?? Infinity) > lo);
+  $("songrows").innerHTML = shown.map(([tr, i]) => {
     const end = tr.end ?? live();
     const inBuf = lo != null && end != null && end > lo;
     const name = `${esc(tr.artist)} – ${esc(tr.title)}`;
@@ -731,6 +763,7 @@ async function loadGrabs(){
     const r = await api("/api/grabs");
     $("grabrows").innerHTML = r.files.map(f => `<tr><td>${esc(f.name)}</td><td>${when(f.mtime)}</td><td>${size(f.size)}</td><td class="act">${rowButtons("/files/grabs/"+enc(f.path), true, f.path)}</td></tr>`).join("")
       || `<tr><td colspan=4 class="dim">Nothing saved on the recorder yet. Downloads go straight to your machine.</td></tr>`;
+    syncPlayButtons();
   } catch(e){}
 }
 async function loadArchive(){
@@ -741,6 +774,7 @@ async function loadArchive(){
     sel_.innerHTML = `<option value="">Latest</option>` + r.days.map(x => `<option>${x}</option>`).join(""); sel_.value = cur;
     $("archrows").innerHTML = r.files.map(f => `<tr class="${f.writing?"writing":""}"><td>${esc(f.path)}${f.writing?" — recording":""}</td><td>${when(f.mtime)}</td><td>${size(f.size)}</td><td class="act">${f.writing ? "<span class='dim'>use the timeline</span>" : rowButtons("/files/archive/"+enc(f.path), true, null)}</td></tr>`).join("")
       || `<tr><td colspan=4 class="dim">No archive files yet.</td></tr>`;
+    syncPlayButtons();
   } catch(e){}
 }
 async function loadLog(){
@@ -749,7 +783,17 @@ async function loadLog(){
 }
 document.addEventListener("click", async e => {
   const play = e.target.closest("[data-play]"), del = e.target.closest("[data-del]");
-  if (play){ const p = $("player"); p.style.display = "block"; p.src = play.dataset.play; p.play(); }
+  if (play){
+    const p = $("player");
+    if (p.dataset.url === play.dataset.play && !p.paused) { stopPlayer(); return; }   // ■ on the playing row
+    if (!$("prev").paused) $("prev").pause();                                         // one thing at a time
+    p.dataset.url = play.dataset.play;
+    p.src = play.dataset.play;
+    $("playname").textContent = decodeURIComponent(play.dataset.play.split("/").pop());
+    p.style.display = "block";
+    p.play().catch(err => toast("Can't play: " + err.message, "bad"));
+    syncPlayButtons();
+  }
   if (del && confirm("Delete " + del.dataset.del + " from the recorder?")){
     try { await api("/api/grabs/" + enc(del.dataset.del), {method:"DELETE"}); loadGrabs(); } catch(err){ toast(err.message, "bad"); }
   }
@@ -848,13 +892,18 @@ const OUT_FIELDS = [
   ["public","List in public directories","bool","icecast shoutcast",""],
   ["send_titles","Send song titles","bool","icecast shoutcast","From song identification (MP3/AAC streams)"],
   ["ttl","Multicast TTL","number","udp rtp","Only matters for multicast addresses"],
-  ["processing","Processing","select:off=Off,limiter=Limiter only,gentle=Gentle (evens out levels),broadcast=Broadcast (denser radio sound),heavy=Heavy (loud and dense),custom=Custom compressor","icecast shoutcast srt udp rtp","Compressor + limiter for this output only; the recording and grabs stay as they aired"],
+  ["processing","Processing","select:off=Off,limiter=Limiter only,gentle=Gentle (evens out levels),broadcast=Broadcast (denser radio sound),heavy=Heavy (loud and dense),custom=Custom compressor,mb_smooth=Multiband – Smooth,mb_punchy=Multiband – Punchy,mb_loud=Multiband – Loud","icecast shoutcast srt udp rtp","Compressor + limiter for this output only; the recording and grabs stay as they aired. Multiband keeps a loud bass line from pulling the rest down"],
   ["ceiling_db","Limiter ceiling (dBFS)","number","icecast shoutcast srt udp rtp","Peaks never go above this; -1 suits most streams","proc"],
   ["comp_threshold_db","Threshold (dBFS)","number","icecast shoutcast srt udp rtp","Compression starts above this level","custom"],
   ["comp_ratio","Ratio","number","icecast shoutcast srt udp rtp","e.g. 4 = 4:1","custom"],
   ["comp_attack_ms","Attack (ms)","number","icecast shoutcast srt udp rtp","","custom"],
   ["comp_release_ms","Release (ms)","number","icecast shoutcast srt udp rtp","","custom"],
   ["comp_makeup_db","Make-up gain (dB)","number","icecast shoutcast srt udp rtp","","custom"],
+  ["mb_drive_db","Drive (dB)","number","icecast shoutcast srt udp rtp","More drive = denser and louder; the ceiling still holds peaks","mb"],
+  ["mb_bass_db","Bass trim (dB)","number","icecast shoutcast srt udp rtp","Below 120 Hz","mb"],
+  ["mb_lowmid_db","Low-mid trim (dB)","number","icecast shoutcast srt udp rtp","120–800 Hz","mb"],
+  ["mb_presence_db","Presence trim (dB)","number","icecast shoutcast srt udp rtp","800 Hz–4 kHz: voices","mb"],
+  ["mb_air_db","Air trim (dB)","number","icecast shoutcast srt udp rtp","Above 4 kHz","mb"],
 ];
 const CODEC_LABELS = {mp3:"MP3", aac:"AAC", ogg:"Ogg Vorbis", opus:"Opus", mp2:"MPEG-1 Layer II (mp2)", pcm:"PCM (uncompressed)"};
 let outKinds = {}, outList = [];
@@ -874,7 +923,8 @@ function renderOutputEditor(r){
                   bitrate_kbps: k === "srt" || k === "udp" ? 256 : 128, mount: "/live", user: "source", mode: "caller",
                   latency_ms: 200, ttl: 16, send_titles: true, public: false, tls: false,
                   processing: "off", ceiling_db: -1, comp_threshold_db: -20, comp_ratio: 4, comp_attack_ms: 10,
-                  comp_release_ms: 200, comp_makeup_db: 6});
+                  comp_release_ms: 200, comp_makeup_db: 6,
+                  mb_drive_db: 0, mb_bass_db: 0, mb_lowmid_db: 0, mb_presence_db: 0, mb_air_db: 0});
     drawOutCards();
   });
   drawOutCards();
@@ -891,6 +941,7 @@ function drawOutCards(){
       if (k === "host" && o.kind === "srt") return (o.mode || "caller") !== "listener";
       if (when === "proc" && proc === "off") return false;
       if (when === "custom" && proc !== "custom") return false;
+      if (when === "mb" && !proc.startsWith("mb_")) return false;
       return ks.includes(o.kind);
     }).map(([k, label, type, , hint]) => {
       const v = o[k] ?? "";

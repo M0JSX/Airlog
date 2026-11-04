@@ -275,7 +275,8 @@ def create_app(holder: Holder) -> Flask:
 
     @app.get("/api/tracks")
     def tracks():
-        return jsonify(tracks=holder.engine.tracks.recent(int(request.args.get("limit", 200))))
+        e = holder.engine
+        return jsonify(tracks=e.tracks.recent(int(request.args.get("limit", 200)), since=e.buffer_start()))
 
     @app.get("/api/peaks")
     def peaks():

@@ -295,12 +295,33 @@ exactly as they aired:
 | Broadcast | 4:1 from -22 dBFS: a consistent, denser "radio" level | 13 dB |
 | Heavy | 8:1 from -28 dBFS: loud and dense, for noisy listening | 6 dB |
 | Custom | Your threshold, ratio, attack, release and make-up gain | — |
+| Multiband – Smooth | 4-band, gentle ratios: a polished but open sound | 16 dB |
+| Multiband – Punchy | 4-band, 4:1, slower bass attack so kick drums keep their punch | 13 dB |
+| Multiband – Loud | 4-band, 8:1: dense and loud | 8 dB |
 
 The presets keep loud passages at about the level they came in and bring quiet
 ones up. Every setting ends with a peak limiter at the **ceiling** (-1 dBFS by
 default). It limits sample peaks; leave a little headroom for lossy codecs, so
--1 to -2 dBFS for MP3/AAC streams. It's a broadband compressor, not a
-multiband broadcast processor.
+-1 to -2 dBFS for MP3/AAC streams.
+
+**Multiband** splits the audio into four bands (bass below 120 Hz, low-mid to
+800 Hz, presence to 4 kHz, air above) and compresses each on its own, after a
+30 Hz high-pass and a slow AGC that rides the overall level over several
+seconds. The bands add back up flat (measured: 0.0 dB at every frequency), so it
+doesn't colour the sound by itself. Because each band only reacts to itself, a
+loud bass line no longer pulls the vocals and treble down ("pumping"). In the
+tests, a steady treble tone dips 12 dB with the wideband *Broadcast* preset when
+a loud bass note comes in, and under 1 dB with any multiband preset. Each
+multiband output also has:
+
+- **Bass / Low-mid / Presence / Air trim**: ±12 dB per band, after compression
+  (e.g. a little presence for speech on small speakers).
+- **Drive**: more level into the compressors for a denser, louder sound (the
+  ceiling still holds the peaks).
+
+It's built from ffmpeg's crossover, compressor and limiter filters, so it runs on
+every platform with nothing extra installed. It isn't a full broadcast processor:
+there's no clipper, stereo enhancer or FM pre-emphasis handling.
 
 **STL note:** SRT resends lost packets and copes well with a decent internet
 connection, so Airlog to Airlog makes a good backup STL. As the only path to a
@@ -346,8 +367,9 @@ with a back-off. Recording is never affected.
   the current song is closed.
 - Only the 12-second samples are sent, and only while recording. Turn it off
   under **Settings → Song identification**.
-- The song list is kept in `tracks.json` in the grab buffer folder, holding the
-  last 1,000 songs.
+- The song list matches the grab buffer: songs drop off it once they've left the
+  buffer, since they can no longer be selected or grabbed. It's kept in
+  `tracks.json` in the grab buffer folder, so it survives restarts.
 - The Windows, Linux and macOS builds include it. From source, run
   `pip install shazamio`.
 
@@ -493,7 +515,8 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
   hole in the recording), on silence, no flapping, switching back, and starting
   on the backup when the main never connects.
 - `python tests/test_processing.py` measures every processing preset on a test
-  signal (level gap, peaks vs ceiling) and checks a limited output end to end.
+  signal (level gap, peaks vs ceiling), checks multiband against pumping, tonal
+  balance, band trims and drive, and checks a limited output end to end.
 - `python tests/test_nowplaying.py` checks the song-change logic against canned
   Shazam answers (no network).
 

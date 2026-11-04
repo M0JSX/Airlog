@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 SAMPLE_S = 12          # seconds of audio sent per check
 MISSES_TO_END = 2      # consecutive checks without a match before the current song is closed
 REJOIN_S = 150         # the same song matched again within this gap continues the old entry
-KEEP = 1000            # tracks kept in tracks.json
+KEEP = 1000            # most tracks ever kept in tracks.json (the buffer length usually limits it first)
 SAVE_EVERY_S = 120     # how often "still playing" updates are written out
 
 
@@ -47,8 +47,11 @@ _FIELDS = {f.name for f in fields(Track)}
 
 
 class TrackLog:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, retention_s: float | None = None):
         self.path = path
+        # Songs that ended longer ago than this (the grab buffer's length) are dropped: they're no
+        # longer in the buffer, so they can't be selected or grabbed.
+        self.retention_s = retention_s
         self.lock = threading.Lock()
         self.tracks: list[Track] = []
         self.rev = 0                 # bumped on every change so clients know to refetch
@@ -64,9 +67,16 @@ class TrackLog:
         last = self.tracks[-1] if self.tracks else None
         if last and last.end is None:
             last.end = max(last.start, last.last_seen)   # we weren't listening after this
+        self._prune()
+
+    def _prune(self) -> None:
+        if self.retention_s:
+            cutoff = time.time() - self.retention_s
+            self.tracks = [t for t in self.tracks if t.end is None or t.end > cutoff]
+        self.tracks = self.tracks[-KEEP:]
 
     def _save(self) -> None:
-        self.tracks = self.tracks[-KEEP:]
+        self._prune()
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
@@ -113,9 +123,11 @@ class TrackLog:
                 t.end = max(t.start, end)
                 self._changed()
 
-    def recent(self, limit: int = 200) -> list[dict]:
+    def recent(self, limit: int = 200, since: float | None = None) -> list[dict]:
+        """Newest first. With since (the buffer's start), only songs still (partly) in the buffer."""
         with self.lock:
-            return [asdict(t) for t in reversed(self.tracks[-limit:])]
+            keep = [t for t in self.tracks if since is None or t.end is None or t.end > since]
+            return [asdict(t) for t in reversed(keep[-limit:])]
 
 
 class Recognizer:

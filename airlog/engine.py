@@ -340,7 +340,7 @@ class Engine:
 
         retention = max(5, cfg.buffer_minutes) * 60
         self.spool = Spool(cfg.effective_spool_dir(), self.sr, self.ch, retention)
-        self.tracks = nowplaying.TrackLog(cfg.effective_spool_dir() / "tracks.json")
+        self.tracks = nowplaying.TrackLog(cfg.effective_spool_dir() / "tracks.json", retention_s=retention)
         self.recognizer: nowplaying.Recognizer | None = None
 
         # Peak history for the waveform: one byte (0-255) per 100 ms block.
