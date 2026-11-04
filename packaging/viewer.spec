@@ -32,6 +32,7 @@ a = Analysis(
     hiddenimports=["airlog.viewer", "airlog.discovery", "airlog.servicecore"] + hidden,
     # servicecore can host the recorder; the viewer never does, so leave the recorder out.
     excludes=["flask", "werkzeug", "jinja2", "waitress", "shazamio", "shazamio_core", "aiohttp", "pydub",
+              "sounddevice", "_sounddevice", "_sounddevice_data",
               "airlog.server", "airlog.engine", "airlog.ui", "airlog.settings", "airlog.nowplaying",
               "airlog.sources", "airlog.winservice", "airlog.unixservice", "PIL", "numpy"],
     noarchive=False,

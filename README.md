@@ -1,14 +1,44 @@
 # Airlog
 
-A radio station logger. It records the station continuously into clock-aligned
-files (one per hour by default) **and** keeps a rolling buffer you can grab from
-seconds after something airs, so you can cut a clip for use later in the same
-hour instead of waiting for the hourly file to close.
+A radio station logger and audio hub. Airlog records the station around the
+clock into clock-aligned files, keeps a rolling buffer you can grab clips from
+seconds after they air, and can take the station in from almost anywhere and
+send it on, processed, to wherever it needs to go.
 
-The recorder runs as a background **service** on Windows, Linux or macOS. Anyone
-on the network opens `http://<recorder>:8080/`, selects audio on the live
-waveform and downloads it to their own machine to edit. Opening the **Airlog**
-app on the recorder itself shows the same UI in its own window.
+**Record and grab**
+- **Hourly archive:** sample-accurate files split on the clock (60, 30 or 15
+  minutes), in MP3, FLAC, WAV or Ogg, and deleted after a set number of days if
+  you want.
+- **Instant grabs:** select audio on a live waveform and download it seconds
+  after it airs, or use the quick-grab buttons for the last 30 s to 15 minutes.
+  Clips come out as WAV, MP3 or FLAC, ready for Audition.
+- **Song identification:** Shazam names each song and marks it on the timeline,
+  so you can select a whole song in one click.
+
+**Sources**
+- An internet stream, a sound card, or a stream **sent to** Airlog over SRT,
+  UDP, RTP or an Icecast-style push from BUTT, Mixxx, OBS or a playout system.
+  That covers logging straight off an STL.
+- A **backup source** running alongside the main one takes over automatically if
+  the main one drops out or goes silent, with no hole in the recording.
+
+**Outputs**
+- Send the station on live to **Icecast or Shoutcast** (with song titles),
+  another Airlog or an STL codec over **SRT**, **UDP or RTP**, or out of a
+  **sound card** to a transmitter, a desk or monitors.
+- Each output can have its own processing: a limiter, a compressor, or a
+  **4-band multiband broadcast compressor**. The archive and grabs always stay
+  exactly as they aired.
+
+**Everywhere**
+- The recorder runs as a background **service** on Windows, Linux or macOS. Anyone
+  on the network opens `http://<recorder>:8080/` to use it. Opening the
+  **Airlog** app on the recorder itself shows the same UI in its own window.
+- **[Airlog Viewer](#airlog-viewer)** for the machines that *use* a recorder: it
+  finds recorders on the network, shows whether they're recording, and opens
+  them signed in.
+- A password (or a trusted-network setting) controls who can change settings.
+  There's also an HTTP API for scripting.
 
 | | Download (from the GitHub release / Actions run) | The service |
 |---|---|---|
@@ -16,11 +46,10 @@ app on the recorder itself shows the same UI in its own window.
 | **Linux** x86_64 / arm64 | `airlog_<ver>_<arch>.deb` or `Airlog-<ver>-linux-<arch>.tar.gz` | systemd unit, from boot |
 | **macOS** 11+ Apple Silicon | `Airlog-<ver>-macos-arm64.dmg` | launchd agent, while you're logged in |
 
-Every build bundles ffmpeg, so the machine needs nothing else. There's also a
-classic all-in-one desktop window (`--classic`) for quick use on one machine.
-
-On the machines that *use* the recorder, install **[Airlog Viewer](#airlog-viewer)**:
-it finds the recorders on the network and opens them in a window.
+Every build bundles ffmpeg, so the machine needs nothing else (on Linux, sound
+card outputs also use the system's PortAudio, which the `.deb` installs). There's
+also a classic all-in-one desktop window (`--classic`) for quick use on one machine.
+Airlog Viewer has its own downloads; see [Airlog Viewer](#airlog-viewer).
 
 ## Install
 
@@ -279,9 +308,31 @@ on/off switch and status, shown under the station name (hover for details):
 | **SRT** | AAC, MP2, MP3, Opus, PCM | **Caller** connects to a receiver (e.g. another Airlog set to *Receive → SRT*); **Listener** waits for the receiver to connect. PCM is uncompressed (SMPTE 302M in MPEG-TS) |
 | **UDP** | AAC, MP2, MP3, Opus, PCM | MPEG-TS, unicast or multicast |
 | **RTP** | PCM (L16), MP2, MP3, Opus, AAC | The output's card in Settings shows the SDP to give the receiver |
+| **Sound card** | — | Plays what's being recorded out of a sound card on the recorder: feed a transmitter, a desk or monitors. See below |
 
 An output that can't keep up (slow network, server gone) drops its oldest
 audio and reconnects with a back-off. The recording itself is never held up.
+
+**Sound card output.** Pick the card with **Refresh**; the choice is saved by
+name, so it survives reboots and other cards being plugged in. **Buffer (ms)**
+(default 200) is the delay to the card: Airlog keeps that much audio queued so
+timing jitter never causes a gap; raise it if the audio crackles. If the source
+stalls the card gets silence (no glitch), and when the source returns the delay
+is back to the buffer setting rather than growing. Unplugging the card shows an
+error and playback resumes when it's back. Processing (compressor, multiband,
+limiter) works on it like any other output.
+
+- **Windows / macOS:** nothing extra to install. On Windows, the WASAPI entries
+  convert the sample rate for you; if a card refuses 48 kHz, try its MME or
+  DirectSound entry.
+- **Linux:** needs PortAudio. The `.deb` installs it; with the tarball run
+  `sudo apt install libportaudio2`. The service reaches the cards through ALSA,
+  not a desktop's PulseAudio/PipeWire, so pick the card's own entry (or
+  `default`).
+- Sound card output from the Windows *service* hasn't been tested on real
+  hardware yet: if the card shows an error there but works from
+  `Airlog.exe --classic`, Windows is keeping the service away from audio
+  devices on that machine.
 
 **Processing** (per output, under *Processing* on its card). A compressor and
 peak limiter for that output only; the archive, grabs and other outputs stay
@@ -514,6 +565,9 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
   restore, with a backup tone at a different level: failover on dropout (no
   hole in the recording), on silence, no flapping, switching back, and starting
   on the backup when the main never connects.
+- `python tests/test_device.py` runs sound card outputs against a stand-in card
+  that plays in real time: steady delay, silence on a stall, backlog dropped,
+  processing, unplug/replug, device lookup and messages.
 - `python tests/test_processing.py` measures every processing preset on a test
   signal (level gap, peaks vs ceiling), checks multiband against pumping, tonal
   balance, band trims and drive, and checks a limited output end to end.

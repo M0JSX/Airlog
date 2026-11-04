@@ -24,6 +24,14 @@ shz_datas, shz_bins, shz_hidden = [], [], []
 for pkg in ("shazamio", "shazamio_core", "zeroconf", "ifaddr"):   # + mDNS announcement for Airlog Viewer
     d, b, h = collect_all(pkg)
     shz_datas += d; shz_bins += b; shz_hidden += h
+# Sound card outputs: sounddevice + PortAudio. Windows/macOS wheels carry PortAudio in _sounddevice_data;
+# Linux uses the system's libportaudio2 (a dependency of the .deb).
+for pkg in ("sounddevice", "_sounddevice", "_sounddevice_data"):
+    try:
+        d, b, h = collect_all(pkg)
+    except Exception:
+        continue
+    shz_datas += d; shz_bins += b; shz_hidden += h + [pkg]
 
 hidden = ["airlog.ui", "airlog.settings", "airlog.osutil", "airlog.selftest", "airlog.server",
           "airlog.servicecore", "airlog.nowplaying", "airlog.discovery", "waitress"]

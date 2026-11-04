@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airlog"
-version = "1.6.1"
-description = "Radio station logger: hourly archive files plus instant grabs of what just aired"
+version = "1.6.2"
+description = "Radio station logger and audio hub: hourly archive, instant grabs, stream and sound card inputs and outputs with processing"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Jonathan" }]
@@ -14,6 +14,7 @@ dependencies = []   # desktop app: standard library + Tk only; needs ffmpeg inst
 [project.optional-dependencies]
 server = ["flask>=2.2", "waitress"]
 identify = ["shazamio"]   # song identification (unofficial Shazam API)
+soundcard = ["sounddevice"]   # sound card outputs (PortAudio)
 
 [project.gui-scripts]
 airlog = "airlog.__main__:main"

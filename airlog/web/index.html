@@ -294,10 +294,10 @@ function view(){
 function renderOutputs(list){
   const el = $("outs");
   if (!list.length){ el.innerHTML = ""; return; }
-  const icon = {connected:["●","ok"], sending:["●","ok"], connecting:["○","warn"], waiting:["○","warn"], error:["⚠","bad"], off:["○","dim"], starting:["○","dim"]};
+  const icon = {connected:["●","ok"], sending:["●","ok"], playing:["●","ok"], connecting:["○","warn"], waiting:["○","warn"], error:["⚠","bad"], off:["○","dim"], starting:["○","dim"]};
   el.innerHTML = list.map(o => {
     const [i, c] = icon[o.state] || ["○", "dim"];
-    const what = {connected:"connected", sending:"sending", connecting:"connecting…", waiting:"waiting for a receiver", error:o.detail, off:"off", starting:"starting"}[o.state] || o.state;
+    const what = {connected:"connected", sending:"sending", playing:"playing", connecting:"connecting…", waiting:"waiting for a receiver", error:o.detail, off:"off", starting:"starting"}[o.state] || o.state;
     const tip = `${o.target} · ${o.codec}` + (o.processing ? ` · ${o.processing}` : "") + (o.detail && o.state !== "error" ? ` · ${o.detail}` : "") + (o.dropped ? ` · ${o.dropped} blocks dropped (network too slow?)` : "");
     return `<span class="o" title="${esc(tip)}">→ ${esc(o.name)} <span class="${c}">${i} ${esc(what)}</span></span>`;
   }).join("");
@@ -875,6 +875,8 @@ let cfgCache = null;
 const OUT_FIELDS = [
   // key, label, type, kinds it applies to, hint
   ["host","Server / receiver","text","icecast shoutcast srt-caller udp rtp","Host name or IP, e.g. stream.example.org or 192.168.1.30"],
+  ["device","Sound card","outdevice","device","Plays what's being recorded, live. Press Refresh to list the cards on the recorder"],
+  ["buffer_ms","Buffer (ms)","number","device","Delay to the card; raise it if the audio crackles. 200 suits most cards"],
   ["port","Port","number","icecast shoutcast srt udp rtp",""],
   ["mode","SRT mode","select:caller=Caller (connect to the receiver),listener=Listener (the receiver connects here)","srt","Caller suits most setups; Listener when the receiver can't accept connections"],
   ["mount","Mount","text","icecast","e.g. /live"],
@@ -892,18 +894,18 @@ const OUT_FIELDS = [
   ["public","List in public directories","bool","icecast shoutcast",""],
   ["send_titles","Send song titles","bool","icecast shoutcast","From song identification (MP3/AAC streams)"],
   ["ttl","Multicast TTL","number","udp rtp","Only matters for multicast addresses"],
-  ["processing","Processing","select:off=Off,limiter=Limiter only,gentle=Gentle (evens out levels),broadcast=Broadcast (denser radio sound),heavy=Heavy (loud and dense),custom=Custom compressor,mb_smooth=Multiband – Smooth,mb_punchy=Multiband – Punchy,mb_loud=Multiband – Loud","icecast shoutcast srt udp rtp","Compressor + limiter for this output only; the recording and grabs stay as they aired. Multiband keeps a loud bass line from pulling the rest down"],
-  ["ceiling_db","Limiter ceiling (dBFS)","number","icecast shoutcast srt udp rtp","Peaks never go above this; -1 suits most streams","proc"],
-  ["comp_threshold_db","Threshold (dBFS)","number","icecast shoutcast srt udp rtp","Compression starts above this level","custom"],
-  ["comp_ratio","Ratio","number","icecast shoutcast srt udp rtp","e.g. 4 = 4:1","custom"],
-  ["comp_attack_ms","Attack (ms)","number","icecast shoutcast srt udp rtp","","custom"],
-  ["comp_release_ms","Release (ms)","number","icecast shoutcast srt udp rtp","","custom"],
-  ["comp_makeup_db","Make-up gain (dB)","number","icecast shoutcast srt udp rtp","","custom"],
-  ["mb_drive_db","Drive (dB)","number","icecast shoutcast srt udp rtp","More drive = denser and louder; the ceiling still holds peaks","mb"],
-  ["mb_bass_db","Bass trim (dB)","number","icecast shoutcast srt udp rtp","Below 120 Hz","mb"],
-  ["mb_lowmid_db","Low-mid trim (dB)","number","icecast shoutcast srt udp rtp","120–800 Hz","mb"],
-  ["mb_presence_db","Presence trim (dB)","number","icecast shoutcast srt udp rtp","800 Hz–4 kHz: voices","mb"],
-  ["mb_air_db","Air trim (dB)","number","icecast shoutcast srt udp rtp","Above 4 kHz","mb"],
+  ["processing","Processing","select:off=Off,limiter=Limiter only,gentle=Gentle (evens out levels),broadcast=Broadcast (denser radio sound),heavy=Heavy (loud and dense),custom=Custom compressor,mb_smooth=Multiband – Smooth,mb_punchy=Multiband – Punchy,mb_loud=Multiband – Loud","icecast shoutcast srt udp rtp device","Compressor + limiter for this output only; the recording and grabs stay as they aired. Multiband keeps a loud bass line from pulling the rest down"],
+  ["ceiling_db","Limiter ceiling (dBFS)","number","icecast shoutcast srt udp rtp device","Peaks never go above this; -1 suits most streams","proc"],
+  ["comp_threshold_db","Threshold (dBFS)","number","icecast shoutcast srt udp rtp device","Compression starts above this level","custom"],
+  ["comp_ratio","Ratio","number","icecast shoutcast srt udp rtp device","e.g. 4 = 4:1","custom"],
+  ["comp_attack_ms","Attack (ms)","number","icecast shoutcast srt udp rtp device","","custom"],
+  ["comp_release_ms","Release (ms)","number","icecast shoutcast srt udp rtp device","","custom"],
+  ["comp_makeup_db","Make-up gain (dB)","number","icecast shoutcast srt udp rtp device","","custom"],
+  ["mb_drive_db","Drive (dB)","number","icecast shoutcast srt udp rtp device","More drive = denser and louder; the ceiling still holds peaks","mb"],
+  ["mb_bass_db","Bass trim (dB)","number","icecast shoutcast srt udp rtp device","Below 120 Hz","mb"],
+  ["mb_lowmid_db","Low-mid trim (dB)","number","icecast shoutcast srt udp rtp device","120–800 Hz","mb"],
+  ["mb_presence_db","Presence trim (dB)","number","icecast shoutcast srt udp rtp device","800 Hz–4 kHz: voices","mb"],
+  ["mb_air_db","Air trim (dB)","number","icecast shoutcast srt udp rtp device","Above 4 kHz","mb"],
 ];
 const CODEC_LABELS = {mp3:"MP3", aac:"AAC", ogg:"Ogg Vorbis", opus:"Opus", mp2:"MPEG-1 Layer II (mp2)", pcm:"PCM (uncompressed)"};
 let outKinds = {}, outList = [];
@@ -924,7 +926,8 @@ function renderOutputEditor(r){
                   latency_ms: 200, ttl: 16, send_titles: true, public: false, tls: false,
                   processing: "off", ceiling_db: -1, comp_threshold_db: -20, comp_ratio: 4, comp_attack_ms: 10,
                   comp_release_ms: 200, comp_makeup_db: 6,
-                  mb_drive_db: 0, mb_bass_db: 0, mb_lowmid_db: 0, mb_presence_db: 0, mb_air_db: 0});
+                  mb_drive_db: 0, mb_bass_db: 0, mb_lowmid_db: 0, mb_presence_db: 0, mb_air_db: 0,
+                  device: "", buffer_ms: 200});
     drawOutCards();
   });
   drawOutCards();
@@ -942,6 +945,7 @@ function drawOutCards(){
       if (when === "proc" && proc === "off") return false;
       if (when === "custom" && proc !== "custom") return false;
       if (when === "mb" && !proc.startsWith("mb_")) return false;
+      if (o.kind === "device" && (k === "codec" || k === "bitrate_kbps" || k === "port")) return false;
       return ks.includes(o.kind);
     }).map(([k, label, type, , hint]) => {
       const v = o[k] ?? "";
@@ -949,6 +953,9 @@ function drawOutCards(){
       if (type === "bool") input = `<input type="checkbox" data-k="${k}" ${v ? "checked" : ""}>`;
       else if (type === "codec") input = `<select data-k="${k}">` + kind.codecs.map(c => `<option value="${c}" ${c === v ? "selected" : ""}>${CODEC_LABELS[c] || c}</option>`).join("") + `</select>`;
       else if (type.startsWith("select:")) input = `<select data-k="${k}">` + type.slice(7).split(",").map(x => { const [val, l] = x.split("="); return `<option value="${val}" ${val === v ? "selected" : ""}>${esc(l)}</option>`; }).join("") + `</select>`;
+      else if (type === "outdevice") input = `<div style="display:flex;gap:6px"><select data-k="${k}" style="flex:1">` +
+        `<option value="${esc(String(v))}">${esc(v ? String(v).replace(" | ", " — ") : "System default output")}</option></select>` +
+        `<button class="small" data-outdevrefresh>Refresh</button></div>`;
       else input = `<input type="${type}" data-k="${k}" value="${esc(String(v))}" ${type === "number" ? 'step="any"' : ""}>`;
       return `<div class="frow"><label>${label}</label>${input}${hint ? `<div class="hint">${esc(hint)}</div>` : ""}</div>`;
     }).join("");
@@ -962,6 +969,17 @@ function drawOutCards(){
   }).join("") || `<div class="dim" style="font-size:13px;margin:8px 0">No outputs.</div>`;
   box.querySelectorAll("[data-del]").forEach(b => b.onclick = e => { e.preventDefault(); collectOutputs(); outList.splice(+b.dataset.del, 1); drawOutCards(); });
   box.querySelectorAll('select[data-k="mode"], select[data-k="processing"]').forEach(sel => sel.onchange = () => { collectOutputs(); drawOutCards(); });
+  box.querySelectorAll("[data-outdevrefresh]").forEach(b => b.onclick = async e => {
+    e.preventDefault();
+    const sel = b.parentElement.querySelector("select"), cur = sel.value;
+    try {
+      const r = await api("/api/output_devices");
+      if (r.error) return toast(r.error, "bad");
+      sel.innerHTML = r.devices.map(d => `<option value="${esc(d.value)}">${esc(d.label)}</option>`).join("");
+      if (!r.devices.some(d => d.value === cur) && cur) sel.insertAdjacentHTML("afterbegin", `<option value="${esc(cur)}">${esc(cur.replace(" | ", " — "))} (not found now)</option>`);
+      sel.value = cur;
+    } catch(err){ toast(err.message, "bad"); }
+  });
   if (cfgCache && !cfgCache.can_edit) box.querySelectorAll("input,select,button").forEach(x => x.disabled = true);
 }
 function collectOutputs(){

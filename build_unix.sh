@@ -53,7 +53,7 @@ VENV=.build/venv-$PLAT-$ARCH
 [[ -x "$VENV/bin/python" ]] || "$PY" -m venv "$VENV"
 VPY="$VENV/bin/python"
 "$VPY" -m pip install --quiet --upgrade pip
-"$VPY" -m pip install --quiet "pyinstaller>=6.6" "flask>=2.2" waitress shazamio zeroconf keyring
+"$VPY" -m pip install --quiet "pyinstaller>=6.6" "flask>=2.2" waitress shazamio zeroconf keyring sounddevice
 
 # ---------------------------------------------------------------- ffmpeg
 step "ffmpeg"
@@ -172,7 +172,7 @@ Version: $VERSION
 Architecture: $DEB_ARCH
 Maintainer: Jonathan (M0JSX) <jonathan@m0jsx.radio>
 Installed-Size: $SIZE
-Depends: libc6 (>= 2.36)
+Depends: libc6 (>= 2.36), libportaudio2
 Recommends: alsa-utils
 Section: sound
 Priority: optional

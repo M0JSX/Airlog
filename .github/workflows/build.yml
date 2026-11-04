@@ -58,7 +58,7 @@ jobs:
       - name: Build tools
         run: |
           apt-get update -qq
-          apt-get install -y -qq --no-install-recommends xvfb xauth binutils dpkg-dev curl xz-utils unzip
+          apt-get install -y -qq --no-install-recommends xvfb xauth binutils dpkg-dev curl xz-utils unzip libportaudio2
 
       - name: Build, self-test and package
         run: ./build_unix.sh
