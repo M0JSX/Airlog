@@ -66,5 +66,17 @@ assert post_cfg(REMOTE, {"station_name": "X"}) == 401
 assert post_cfg(REMOTE, {"station_name": "Remote"}, auth="pw") == 200
 assert holder.cfg.station_name == "Remote"
 
+# Outputs saved by an older version (no processing fields): Settings must come back complete and
+# save again unchanged, rather than failing on fields the older version didn't have.
+holder.cfg.web_password = ""
+holder.cfg.outputs = [{"id": "o1", "name": "Old", "kind": "udp", "host": "127.0.0.1", "port": 5004,
+                       "codec": "mp2", "bitrate_kbps": 256}]
+got = c.get("/api/config", environ_base=LOCAL).get_json()["config"]["outputs"][0]
+assert got["processing"] == "off" and got["ceiling_db"] == -1.0 and got["mb_bass_db"] == 0.0, got
+assert post_cfg(LOCAL, {"outputs": [got]}) == 200
+blank = dict(got, processing="mb_punchy", ceiling_db="", mb_bass_db="")
+assert post_cfg(LOCAL, {"outputs": [blank]}) == 200
+assert holder.cfg.outputs[0]["processing"] == "mb_punchy" and holder.cfg.outputs[0]["ceiling_db"] == -1.0
+
 holder.engine.stop()
 print("access OK")

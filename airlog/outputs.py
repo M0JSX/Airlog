@@ -59,6 +59,8 @@ DEFAULTS = {
     "processing": "off", "ceiling_db": -1.0,
     "comp_threshold_db": -20.0, "comp_ratio": 4.0, "comp_attack_ms": 10.0, "comp_release_ms": 200.0,
     "comp_makeup_db": 6.0,
+    # Multiband: per-band level trims (dB) after compression, and the AGC/compressor drive
+    "mb_bass_db": 0.0, "mb_lowmid_db": 0.0, "mb_presence_db": 0.0, "mb_air_db": 0.0, "mb_drive_db": 0.0,
 }
 
 # Compressor presets: threshold dB, ratio, attack ms, release ms, make-up gain dB.
@@ -69,7 +71,34 @@ PRESETS = {
     "broadcast": (-22.0, 4.0, 10.0, 200.0, 11.5),   # consistent, denser "radio" level
     "heavy": (-28.0, 8.0, 5.0, 120.0, 18.5),        # loud and dense; for noisy listening
 }
-PROCESSING = ("off", "limiter", "gentle", "broadcast", "heavy", "custom")
+# Multiband broadcast processing: high-pass -> slow wideband AGC -> 4 bands, each with its own
+# compressor -> sum -> peak limiter. The crossover (Linkwitz-Riley, 4th order) sums back flat, and each
+# band only compresses itself, so a loud bass line no longer pulls the vocals and treble down.
+MB_SPLITS = (120, 800, 4000)                      # bass | low-mid | presence | air (Hz)
+MB_BANDS = ("bass", "lowmid", "presence", "air")
+# Per preset: AGC (threshold dB, ratio, attack ms, release ms, make-up dB), then per band
+# (threshold dB, ratio, attack ms, release ms, make-up dB). Make-up is set (measured in
+# tests/test_processing.py) so loud passages leave at about the level they came in.
+MB_PRESETS = {
+    "mb_smooth": {
+        "agc": (-20.0, 1.5, 2000.0, 8000.0, 0.0),
+        "bands": ((-26.0, 2.5, 40.0, 400.0, 11.5), (-26.0, 2.5, 25.0, 300.0, 11.5),
+                  (-28.0, 2.5, 12.0, 220.0, 11.5), (-30.0, 2.5, 6.0, 160.0, 11.5)),
+    },
+    "mb_punchy": {
+        "agc": (-20.0, 1.7, 2000.0, 8000.0, 0.0),
+        "bands": ((-28.0, 4.0, 50.0, 300.0, 14.5), (-28.0, 4.0, 20.0, 200.0, 14.5),
+                  (-30.0, 4.0, 8.0, 150.0, 14.5), (-32.0, 4.0, 4.0, 110.0, 14.5)),
+    },
+    "mb_loud": {
+        "agc": (-22.0, 2.0, 1500.0, 6000.0, 0.0),
+        "bands": ((-34.0, 8.0, 20.0, 220.0, 22.0), (-34.0, 8.0, 10.0, 160.0, 22.0),
+                  (-36.0, 8.0, 5.0, 110.0, 22.0), (-38.0, 8.0, 2.0, 80.0, 22.0)),
+    },
+}
+PROCESSING = ("off", "limiter", "gentle", "broadcast", "heavy", "custom", "mb_smooth", "mb_punchy", "mb_loud")
+PROCESSING_LABELS = {"gentle": "gentle", "broadcast": "broadcast", "heavy": "heavy", "custom": "custom",
+                     "mb_smooth": "multiband smooth", "mb_punchy": "multiband punchy", "mb_loud": "multiband loud"}
 SECRETS = ("password", "passphrase")
 
 
@@ -85,7 +114,8 @@ def normalize_outputs(raw, previous: list | None = None) -> list[dict]:
             raise ValueError("bad output")
         o = copy.deepcopy(DEFAULTS)
         for k, v in item.items():
-            if k in o:
+            # A blank field (e.g. a setting added in a newer version, shown empty) keeps its default.
+            if k in o and not (v == "" and isinstance(DEFAULTS[k], (int, float)) and not isinstance(DEFAULTS[k], bool)):
                 o[k] = v
         o["id"] = str(o["id"] or uuid.uuid4().hex[:8])
         old = prev.get(o["id"], {})
@@ -98,7 +128,7 @@ def normalize_outputs(raw, previous: list | None = None) -> list[dict]:
             for k in ("bitrate_kbps", "port", "latency_ms", "ttl"):
                 o[k] = int(float(o[k]))
             for k in ("ceiling_db", "comp_threshold_db", "comp_ratio", "comp_attack_ms", "comp_release_ms",
-                      "comp_makeup_db"):
+                      "comp_makeup_db", "mb_bass_db", "mb_lowmid_db", "mb_presence_db", "mb_air_db", "mb_drive_db"):
                 o[k] = float(o[k])
             for k in ("name", "kind", "codec", "host", "mount", "user", "password", "stream_name", "genre",
                       "description", "url", "mode", "passphrase", "processing"):
@@ -142,14 +172,19 @@ def normalize_outputs(raw, previous: list | None = None) -> list[dict]:
         o["comp_attack_ms"] = max(0.1, min(2000.0, o["comp_attack_ms"]))
         o["comp_release_ms"] = max(1.0, min(9000.0, o["comp_release_ms"]))
         o["comp_makeup_db"] = max(0.0, min(36.0, o["comp_makeup_db"]))
+        for b in MB_BANDS:
+            o[f"mb_{b}_db"] = max(-12.0, min(12.0, o[f"mb_{b}_db"]))
+        o["mb_drive_db"] = max(-12.0, min(12.0, o["mb_drive_db"]))
         out.append(o)
     return out
 
 
 def mask_outputs(outputs: list) -> list[dict]:
+    """Outputs for the browser: every field present (with defaults for settings added since they
+    were saved) and secrets masked."""
     res = []
     for o in outputs or []:
-        o = dict(o)
+        o = {**copy.deepcopy(DEFAULTS), **o}
         for k in SECRETS:
             if o.get(k):
                 o[k] = MASK
@@ -169,12 +204,42 @@ def describe(o: dict) -> str:
 
 
 # ---------------------------------------------------------------- processing
+def _comp(thr: float, ratio: float, att: float, rel: float, mk: float, knee: float = 2.8) -> str:
+    return (f"acompressor=threshold={thr:g}dB:ratio={ratio:g}:attack={att:g}:release={rel:g}"
+            f":makeup={max(0.0, mk):g}dB:knee={knee:g}")
+
+
+def multiband_filter(o: dict, preset: dict) -> str:
+    """High-pass, AGC, 4-band compression with trims, sum, limiter."""
+    drive = o.get("mb_drive_db", 0.0)
+    pre = ["highpass=f=30:poles=2"]
+    if drive:
+        pre.append(f"volume={drive:g}dB")
+    pre.append(_comp(*preset["agc"], knee=6))
+    split = " ".join(str(f) for f in MB_SPLITS)
+    graph = [",".join(pre) + f",acrossover=split={split}:order=4th[b0][b1][b2][b3]"]
+    for i, (band, params) in enumerate(zip(MB_BANDS, preset["bands"])):
+        trim = o.get(f"mb_{band}_db", 0.0)
+        thr, ratio, att, rel, mk = params
+        # A positive trim beyond the compressor's 0-36 dB make-up range is applied as plain gain.
+        stage = _comp(thr, ratio, att, rel, mk)
+        if trim:
+            stage += f",volume={trim:g}dB"
+        graph.append(f"[b{i}]{stage}[c{i}]")
+    ceiling = o.get("ceiling_db", -1.0)
+    graph.append("[c0][c1][c2][c3]amix=inputs=4:normalize=0,"
+                 f"alimiter=limit={ceiling:g}dB:attack=5:release=50:level=0")
+    return ";".join(graph)
+
+
 def process_filter(o: dict) -> str | None:
-    """ffmpeg -af chain for this output's processing: compressor (preset or custom), then a peak limiter
-    at the ceiling. The limiter's auto-level is off, so it only ever turns peaks down."""
+    """ffmpeg -af chain for this output's processing: compressor (preset, custom or multiband), then a
+    peak limiter at the ceiling. The limiter's auto-level is off, so it only ever turns peaks down."""
     mode = o.get("processing", "off")
     if mode == "off":
         return None
+    if mode in MB_PRESETS:
+        return multiband_filter(o, MB_PRESETS[mode])
     chain = []
     if mode in PRESETS or mode == "custom":
         thr, ratio, att, rel, mk = PRESETS[mode] if mode in PRESETS else (
@@ -192,7 +257,7 @@ def describe_processing(o: dict) -> str:
         return ""
     if mode == "limiter":
         return f"limiter {o['ceiling_db']:g} dBFS"
-    return f"{mode} compression, limiter {o['ceiling_db']:g} dBFS"
+    return f"{PROCESSING_LABELS.get(mode, mode)} compression, limiter {o['ceiling_db']:g} dBFS"
 
 
 # ---------------------------------------------------------------- encoding

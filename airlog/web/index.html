@@ -848,13 +848,18 @@ const OUT_FIELDS = [
   ["public","List in public directories","bool","icecast shoutcast",""],
   ["send_titles","Send song titles","bool","icecast shoutcast","From song identification (MP3/AAC streams)"],
   ["ttl","Multicast TTL","number","udp rtp","Only matters for multicast addresses"],
-  ["processing","Processing","select:off=Off,limiter=Limiter only,gentle=Gentle (evens out levels),broadcast=Broadcast (denser radio sound),heavy=Heavy (loud and dense),custom=Custom compressor","icecast shoutcast srt udp rtp","Compressor + limiter for this output only; the recording and grabs stay as they aired"],
+  ["processing","Processing","select:off=Off,limiter=Limiter only,gentle=Gentle (evens out levels),broadcast=Broadcast (denser radio sound),heavy=Heavy (loud and dense),custom=Custom compressor,mb_smooth=Multiband – Smooth,mb_punchy=Multiband – Punchy,mb_loud=Multiband – Loud","icecast shoutcast srt udp rtp","Compressor + limiter for this output only; the recording and grabs stay as they aired. Multiband keeps a loud bass line from pulling the rest down"],
   ["ceiling_db","Limiter ceiling (dBFS)","number","icecast shoutcast srt udp rtp","Peaks never go above this; -1 suits most streams","proc"],
   ["comp_threshold_db","Threshold (dBFS)","number","icecast shoutcast srt udp rtp","Compression starts above this level","custom"],
   ["comp_ratio","Ratio","number","icecast shoutcast srt udp rtp","e.g. 4 = 4:1","custom"],
   ["comp_attack_ms","Attack (ms)","number","icecast shoutcast srt udp rtp","","custom"],
   ["comp_release_ms","Release (ms)","number","icecast shoutcast srt udp rtp","","custom"],
   ["comp_makeup_db","Make-up gain (dB)","number","icecast shoutcast srt udp rtp","","custom"],
+  ["mb_drive_db","Drive (dB)","number","icecast shoutcast srt udp rtp","More drive = denser and louder; the ceiling still holds peaks","mb"],
+  ["mb_bass_db","Bass trim (dB)","number","icecast shoutcast srt udp rtp","Below 120 Hz","mb"],
+  ["mb_lowmid_db","Low-mid trim (dB)","number","icecast shoutcast srt udp rtp","120–800 Hz","mb"],
+  ["mb_presence_db","Presence trim (dB)","number","icecast shoutcast srt udp rtp","800 Hz–4 kHz: voices","mb"],
+  ["mb_air_db","Air trim (dB)","number","icecast shoutcast srt udp rtp","Above 4 kHz","mb"],
 ];
 const CODEC_LABELS = {mp3:"MP3", aac:"AAC", ogg:"Ogg Vorbis", opus:"Opus", mp2:"MPEG-1 Layer II (mp2)", pcm:"PCM (uncompressed)"};
 let outKinds = {}, outList = [];
@@ -874,7 +879,8 @@ function renderOutputEditor(r){
                   bitrate_kbps: k === "srt" || k === "udp" ? 256 : 128, mount: "/live", user: "source", mode: "caller",
                   latency_ms: 200, ttl: 16, send_titles: true, public: false, tls: false,
                   processing: "off", ceiling_db: -1, comp_threshold_db: -20, comp_ratio: 4, comp_attack_ms: 10,
-                  comp_release_ms: 200, comp_makeup_db: 6});
+                  comp_release_ms: 200, comp_makeup_db: 6,
+                  mb_drive_db: 0, mb_bass_db: 0, mb_lowmid_db: 0, mb_presence_db: 0, mb_air_db: 0});
     drawOutCards();
   });
   drawOutCards();
@@ -891,6 +897,7 @@ function drawOutCards(){
       if (k === "host" && o.kind === "srt") return (o.mode || "caller") !== "listener";
       if (when === "proc" && proc === "off") return false;
       if (when === "custom" && proc !== "custom") return false;
+      if (when === "mb" && !proc.startsWith("mb_")) return false;
       return ks.includes(o.kind);
     }).map(([k, label, type, , hint]) => {
       const v = o[k] ?? "";

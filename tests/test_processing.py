@@ -48,6 +48,27 @@ def rms(a: array, t1: float, t2: float) -> float:
     return db(math.sqrt(sum(v * v for v in seg) / len(seg)) / 32768)
 
 
+def tone(a: array, f: float, t1: float, t2: float) -> float:
+    """Level of one frequency in [t1, t2), dBFS (Goertzel)."""
+    seg = a[int(t1 * SR):int(t2 * SR)]
+    k = 2 * math.cos(2 * math.pi * f / SR)
+    s1 = s2 = 0.0
+    for v in seg:
+        s0 = v / 32768 + k * s1 - s2
+        s2, s1 = s1, s0
+    p = s1 * s1 + s2 * s2 - k * s1 * s2
+    return db(2 * math.sqrt(max(p, 0)) / len(seg) / math.sqrt(2))
+
+
+def run_src(src: str, af: str | None) -> array:
+    global SIGNAL
+    saved, SIGNAL = SIGNAL, src
+    try:
+        return run(af)
+    finally:
+        SIGNAL = saved
+
+
 def measure(a: array) -> tuple[float, float, float]:
     """(quiet dB, loud dB, sample peak dB) over the last two cycles, avoiding bursts and edges."""
     quiet = sum(rms(a, c + 1.1, c + 1.9) for c in (8, 12)) / 2
@@ -58,23 +79,76 @@ def measure(a: array) -> tuple[float, float, float]:
 
 print("-- presets on a test signal (quiet -30 dBFS / loud -6 dBFS / peaks near 0 dBFS)")
 print(f"   {'preset':10} {'quiet':>7} {'loud':>7} {'range':>7} {'peak':>7}")
-ranges, louds, quiets = {}, {}, {}
+ranges, louds, quiets, peaks = {}, {}, {}, {}
 for mode in outputs.PROCESSING:
     if mode == "custom":
         continue
     o = outputs.normalize_outputs([{"kind": "udp", "host": "h", "processing": mode, "ceiling_db": -1}])[0]
     q, l, pk = measure(run(outputs.process_filter(o)))
-    ranges[mode], louds[mode], quiets[mode] = l - q, l, q
+    ranges[mode], louds[mode], quiets[mode], peaks[mode] = l - q, l, q, pk
     print(f"   {mode:10} {q:7.1f} {l:7.1f} {l - q:7.1f} {pk:7.1f}")
     if mode != "off":
         assert pk <= -1.0 + 0.3, f"{mode}: peak {pk:.2f} dBFS over the -1 dBFS ceiling"
 assert ranges["off"] > 23, ranges
 assert abs(ranges["limiter"] - ranges["off"]) < 1.5, "the limiter alone shouldn't change the overall level balance"
 assert ranges["off"] > ranges["gentle"] > ranges["broadcast"] > ranges["heavy"], ranges
+for mode in outputs.MB_PRESETS:
+    assert peaks[mode] <= -1.0 + 0.3, (mode, peaks[mode])
 assert ranges["heavy"] < 14, ranges
 for mode in ("gentle", "broadcast", "heavy"):
     assert abs(louds[mode] - louds["off"]) < 2.5, f"{mode}: loud passages moved {louds[mode] - louds['off']:+.1f} dB"
     assert quiets[mode] > quiets["off"] + 2, f"{mode}: quiet passages weren't brought up"
+
+# ---------------------------------------------------------------- multiband
+# Treble at -24 dBFS all the time; a 60 Hz bass note at -6 dBFS on for 2 s, off for 2 s. A wideband
+# compressor turns everything down when the bass comes in ("pumping"); multiband shouldn't.
+PUMP = "aevalsrc='0.063*sin(2*PI*4000*t)+if(gte(mod(t,4),2),0.5,0)*sin(2*PI*60*t)':s=48000:d=20"
+# Four quiet tones, one per band, to check the tonal balance and the band trims.
+BANDS = "aevalsrc='0.03*(sin(2*PI*60*t)+sin(2*PI*400*t)+sin(2*PI*2000*t)+sin(2*PI*8000*t))':s=48000:d=6"
+FREQS = (60, 400, 2000, 8000)
+
+
+def pump_dip(af):
+    b = run_src(PUMP, af)
+    off = sum(tone(b, 4000, c + 0.8, c + 1.8) for c in (12, 16)) / 2
+    on = sum(tone(b, 4000, c + 2.8, c + 3.8) for c in (12, 16)) / 2
+    return on - off
+
+
+def band_levels(af):
+    b = run_src(BANDS, af)
+    return [tone(b, f, 3, 5) for f in FREQS]
+
+
+def mb(mode, **kw):
+    return outputs.normalize_outputs([{"kind": "udp", "host": "h", "processing": mode, "ceiling_db": -1, **kw}])[0]
+
+
+print("-- multiband: treble dip when a loud bass note comes in (pumping)")
+dips = {m: pump_dip(outputs.process_filter(mb(m))) for m in ("broadcast", "heavy", *outputs.MB_PRESETS)}
+for m, d in dips.items():
+    print(f"   {m:12} {d:+5.1f} dB")
+assert dips["broadcast"] < -6 and dips["heavy"] < -6, "the wideband presets should show the problem"
+for m in outputs.MB_PRESETS:
+    assert dips[m] > -2.0, f"{m}: treble dips {dips[m]:.1f} dB when the bass comes in"
+    assert louds[m] - louds["off"] > -2.5 and louds[m] - louds["off"] < 2.5, (m, louds[m])
+    assert quiets[m] > quiets["off"] + 6, f"{m}: quiet passages weren't brought up"
+assert ranges["mb_smooth"] > ranges["mb_punchy"] > ranges["mb_loud"], ranges
+
+print("-- multiband: tonal balance and band trims (quiet tones at 60 / 400 / 2k / 8k Hz)")
+ref = band_levels(None)
+flat = [x - r for x, r in zip(band_levels(outputs.process_filter(mb("mb_punchy"))), ref)]
+print("   punchy, no trims:     " + "  ".join(f"{f}Hz {d:+.1f}" for f, d in zip(FREQS, flat)))
+assert max(flat) - min(flat) < 1.5, f"multiband changed the tonal balance: {flat}"
+trim = [x - r for x, r in zip(band_levels(outputs.process_filter(mb("mb_punchy", mb_bass_db=6, mb_air_db=-6))), ref)]
+print("   bass +6, air -6:      " + "  ".join(f"{f}Hz {d:+.1f}" for f, d in zip(FREQS, trim)))
+rel = [t - f for t, f in zip(trim, flat)]
+assert abs(rel[0] - 6) < 1.0 and abs(rel[3] + 6) < 1.0 and abs(rel[1]) < 1.0 and abs(rel[2]) < 1.0, rel
+q0, l0, _ = measure(run(outputs.process_filter(mb("mb_smooth"))))
+q1, l1, pk1 = measure(run(outputs.process_filter(mb("mb_smooth", mb_drive_db=6))))
+print(f"   smooth, drive +6:     gap {l0 - q0:.1f} -> {l1 - q1:.1f} dB, peak {pk1:.1f}")
+assert l1 - q1 < l0 - q0 - 1 and pk1 <= -0.7, "drive should make it denser without passing the ceiling"
+assert "multiband punchy" in outputs.describe_processing(mb("mb_punchy"))
 
 print("-- custom settings")
 o = outputs.normalize_outputs([{"kind": "udp", "host": "h", "processing": "custom", "ceiling_db": -3,
