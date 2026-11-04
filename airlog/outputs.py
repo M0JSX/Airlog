@@ -55,7 +55,21 @@ DEFAULTS = {
     "mode": "caller", "latency_ms": 200, "passphrase": "",
     # UDP / RTP multicast
     "ttl": 16,
+    # Processing (this output only; the archive and grabs stay as they aired)
+    "processing": "off", "ceiling_db": -1.0,
+    "comp_threshold_db": -20.0, "comp_ratio": 4.0, "comp_attack_ms": 10.0, "comp_release_ms": 200.0,
+    "comp_makeup_db": 6.0,
 }
+
+# Compressor presets: threshold dB, ratio, attack ms, release ms, make-up gain dB.
+PRESETS = {
+    # Make-up gain is set so loud passages come out at about the level they went in, and quiet
+    # passages are brought up (measured in tests/test_processing.py).
+    "gentle": (-18.0, 2.0, 20.0, 300.0, 5.5),       # evens out levels; barely audible
+    "broadcast": (-22.0, 4.0, 10.0, 200.0, 11.5),   # consistent, denser "radio" level
+    "heavy": (-28.0, 8.0, 5.0, 120.0, 18.5),        # loud and dense; for noisy listening
+}
+PROCESSING = ("off", "limiter", "gentle", "broadcast", "heavy", "custom")
 SECRETS = ("password", "passphrase")
 
 
@@ -83,8 +97,11 @@ def normalize_outputs(raw, previous: list | None = None) -> list[dict]:
                 o[k] = bool(o[k])
             for k in ("bitrate_kbps", "port", "latency_ms", "ttl"):
                 o[k] = int(float(o[k]))
+            for k in ("ceiling_db", "comp_threshold_db", "comp_ratio", "comp_attack_ms", "comp_release_ms",
+                      "comp_makeup_db"):
+                o[k] = float(o[k])
             for k in ("name", "kind", "codec", "host", "mount", "user", "password", "stream_name", "genre",
-                      "description", "url", "mode", "passphrase"):
+                      "description", "url", "mode", "passphrase", "processing"):
                 o[k] = str(o[k]).strip() if k not in SECRETS else str(o[k])
         except (TypeError, ValueError):
             raise ValueError(f"Output {i + 1}: a number field isn't a number") from None
@@ -116,6 +133,15 @@ def normalize_outputs(raw, previous: list | None = None) -> list[dict]:
         if o["kind"] == "icecast":
             o["mount"] = "/" + o["mount"].lstrip("/") if o["mount"].strip("/") else "/live"
         o["ttl"] = max(1, min(255, o["ttl"]))
+        if o["processing"] not in PROCESSING:
+            o["processing"] = "off"
+        # Keep within what ffmpeg's acompressor / alimiter accept.
+        o["ceiling_db"] = max(-24.0, min(0.0, o["ceiling_db"]))
+        o["comp_threshold_db"] = max(-60.0, min(0.0, o["comp_threshold_db"]))
+        o["comp_ratio"] = max(1.0, min(20.0, o["comp_ratio"]))
+        o["comp_attack_ms"] = max(0.1, min(2000.0, o["comp_attack_ms"]))
+        o["comp_release_ms"] = max(1.0, min(9000.0, o["comp_release_ms"]))
+        o["comp_makeup_db"] = max(0.0, min(36.0, o["comp_makeup_db"]))
         out.append(o)
     return out
 
@@ -140,6 +166,33 @@ def describe(o: dict) -> str:
     if k == "srt" and o["mode"] == "listener":
         return f"SRT listener on port {o['port']}"
     return f"{k}://{o['host']}:{o['port']}"
+
+
+# ---------------------------------------------------------------- processing
+def process_filter(o: dict) -> str | None:
+    """ffmpeg -af chain for this output's processing: compressor (preset or custom), then a peak limiter
+    at the ceiling. The limiter's auto-level is off, so it only ever turns peaks down."""
+    mode = o.get("processing", "off")
+    if mode == "off":
+        return None
+    chain = []
+    if mode in PRESETS or mode == "custom":
+        thr, ratio, att, rel, mk = PRESETS[mode] if mode in PRESETS else (
+            o["comp_threshold_db"], o["comp_ratio"], o["comp_attack_ms"], o["comp_release_ms"], o["comp_makeup_db"])
+        chain.append(f"acompressor=threshold={thr:g}dB:ratio={ratio:g}:attack={att:g}:release={rel:g}"
+                     f":makeup={mk:g}dB:knee=2.8")
+    ceiling = o.get("ceiling_db", -1.0)
+    chain.append(f"alimiter=limit={ceiling:g}dB:attack=5:release=50:level=0")
+    return ",".join(chain)
+
+
+def describe_processing(o: dict) -> str:
+    mode = o.get("processing", "off")
+    if mode == "off":
+        return ""
+    if mode == "limiter":
+        return f"limiter {o['ceiling_db']:g} dBFS"
+    return f"{mode} compression, limiter {o['ceiling_db']:g} dBFS"
 
 
 # ---------------------------------------------------------------- encoding
@@ -186,6 +239,7 @@ class Output:
         self.sent = 0                     # bytes sent to the network (Icecast/Shoutcast)
         self.dropped = 0                  # blocks dropped because the output fell behind
         self.sdp = ""
+        self.sdp_path = None              # RTP: where ffmpeg writes the SDP (it can appear a moment after connecting)
         self.proc: subprocess.Popen | None = None
         self.sock: socket.socket | None = None
         self.running = False
@@ -209,7 +263,13 @@ class Output:
 
     def status(self) -> dict:
         o = self.o
+        if self.sdp_path is not None and not self.sdp and self.state == "sending":
+            try:
+                self.sdp = self.sdp_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
         return {"id": o["id"], "name": o["name"], "kind": o["kind"], "codec": o["codec"],
+                "processing": describe_processing(o),
                 "target": describe(o), "state": self.state, "detail": self.detail, "since": self.since,
                 "sent": self.sent, "dropped": self.dropped, "sdp": self.sdp}
 
@@ -285,9 +345,10 @@ class Output:
     def _encoder(self, target: list[str], loglevel: str) -> subprocess.Popen:
         cfg = self.engine.cfg
         args, _ = codec_args(self.o, self.engine.sr, self.engine.ch)
+        af = process_filter(self.o)
         cmd = [cfg.ffmpeg_path, "-hide_banner", "-nostdin", "-nostats", "-loglevel", loglevel,
                "-f", "s16le", "-ar", str(self.engine.sr), "-ac", str(self.engine.ch), "-i", "pipe:0",
-               *args, "-f", container(self.o), *target]
+               *(["-af", af] if af else []), *args, "-f", container(self.o), *target]
         try:
             return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     creationflags=NO_WINDOW)
@@ -332,7 +393,8 @@ class Output:
             target = [f"udp://{o['host']}:{o['port']}?pkt_size=1316&ttl={o['ttl']}"]
             self._set("connecting", describe(o))
         else:
-            sdp = self.engine.cfg.effective_spool_dir() / f"output-{o['id']}.sdp"
+            sdp = self.sdp_path = self.engine.cfg.effective_spool_dir() / f"output-{o['id']}.sdp"
+            self.sdp = ""
             target = ["-sdp_file", str(sdp), f"rtp://{o['host']}:{o['port']}?ttl={o['ttl']}"]
             self._set("connecting", describe(o))
         proc = self.proc = self._encoder(target, "info")

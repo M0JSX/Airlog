@@ -1,5 +1,5 @@
 ; Inno Setup script for Airlog. Built by build_windows.ps1 after PyInstaller:
-;   iscc /DAppVersion=1.5.0 packaging\installer.iss
+;   iscc /DAppVersion=1.6.0 packaging\installer.iss
 ; Output: dist\Airlog-Setup-<version>.exe
 ;
 ; Installs to Program Files and registers the "Airlog Recorder" Windows service
@@ -7,7 +7,7 @@
 ; Running a newer Setup over an existing install upgrades it in place.
 
 #ifndef AppVersion
-  #define AppVersion "1.5.0"
+  #define AppVersion "1.6.0"
 #endif
 
 [Setup]

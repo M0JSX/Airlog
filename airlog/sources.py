@@ -97,7 +97,7 @@ def receive_args(cfg: Config) -> list[str]:
         return ["-f", "mpegts", "-i", f"udp://{group}:{port}?fifo_size=1000000&overrun_nonfatal=1"]
     if proto == "rtp":
         if cfg.receive_sdp.strip():
-            sdp = cfg.effective_spool_dir() / "receive.sdp"
+            sdp = cfg.effective_spool_dir() / f"receive-{cfg.extra.get('_role', 'main')}.sdp"
             sdp.parent.mkdir(parents=True, exist_ok=True)
             sdp.write_text(cfg.receive_sdp.strip() + "\n", encoding="utf-8")
             return ["-protocol_whitelist", "file,udp,rtp", "-i", str(sdp)]

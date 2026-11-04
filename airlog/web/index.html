@@ -294,7 +294,7 @@ function renderOutputs(list){
   el.innerHTML = list.map(o => {
     const [i, c] = icon[o.state] || ["○", "dim"];
     const what = {connected:"connected", sending:"sending", connecting:"connecting…", waiting:"waiting for a receiver", error:o.detail, off:"off", starting:"starting"}[o.state] || o.state;
-    const tip = `${o.target} · ${o.codec}` + (o.detail && o.state !== "error" ? ` · ${o.detail}` : "") + (o.dropped ? ` · ${o.dropped} blocks dropped (network too slow?)` : "");
+    const tip = `${o.target} · ${o.codec}` + (o.processing ? ` · ${o.processing}` : "") + (o.detail && o.state !== "error" ? ` · ${o.detail}` : "") + (o.dropped ? ` · ${o.dropped} blocks dropped (network too slow?)` : "");
     return `<span class="o" title="${esc(tip)}">→ ${esc(o.name)} <span class="${c}">${i} ${esc(what)}</span></span>`;
   }).join("");
 }
@@ -345,9 +345,11 @@ async function pollPeaks(){
 function renderStatus(){
   const s = st;
   const map = {recording:["REC","rec"], starting:["CONNECTING",""], reconnecting:["RECONNECTING",""], waiting:["WAITING",""], error:["ERROR",""], stopped:["STOPPED",""]};
-  const [txt, cls] = map[s.status] || [s.status, ""];
+  let [txt, cls] = map[s.status] || [s.status, ""];
+  const fo = s.failover, onBackup = fo && fo.active === "backup";
+  if (onBackup && s.status === "recording") txt = "REC · ON BACKUP";
   $("stxt").textContent = txt;
-  $("stxt").style.color = s.status === "recording" ? "var(--red)" : (s.status === "stopped" ? "var(--fg)" : "var(--amber)");
+  $("stxt").style.color = onBackup ? "var(--amber)" : s.status === "recording" ? "var(--red)" : (s.status === "stopped" ? "var(--fg)" : "var(--amber)");
   $("dot").className = "dot " + cls;
   if (s.status !== "recording" && s.status !== "stopped") $("dot").style.background = "var(--amber)"; else $("dot").style.background = "";
   $("station").textContent = s.station;
@@ -359,7 +361,17 @@ function renderStatus(){
         : `Receiving ${label} on port ${s.receive.port}` + (s.receive.sender ? ` from ${s.receive.sender}` : "");
   }
   if ((s.status === "error" || s.status === "reconnecting") && s.last_error) src += "  ·  " + s.last_error;
+  if (fo){
+    const last = fo.switches.length ? fo.switches[fo.switches.length - 1] : null;
+    if (onBackup){
+      src = `On backup: ${fo.backup.source}` + (last ? `  ·  ${last.reason} at ${hms(last.time, false)}` : "");
+    } else {
+      const b = fo.backup.status;
+      src += "  ·  backup " + (b === "recording" ? "standing by" : b === "waiting" ? "waiting for a sender" : b);
+    }
+  }
   $("source").textContent = src;
+  $("source").className = "sub" + (onBackup ? " warn" : "");
   renderOutputs(s.outputs || []);
   if (s.archive){
     const lt = live() ?? s.server_time;
@@ -770,6 +782,24 @@ const FIELDS = [
   ["source_delay_s","Source delay (s)","number",null,"How far the source runs behind air; shifts timestamps and file splits back"],
   ["sample_rate","Sample rate","select",[[44100,"44100"],[48000,"48000"]]],
   ["channels","Channels","select",[[2,"Stereo"],[1,"Mono"]]],
+  ["Backup source"],
+  ["backup_enabled","Use a backup source","bool",null,"Runs alongside the main source and takes over automatically if the main one drops out or goes silent","backup:"],
+  ["backup_source_type","Backup","select",[["stream","Internet stream"],["device","Sound card input"],["receive","Receive a stream (SRT / UDP / RTP / Icecast push)"],["custom","Custom ffmpeg input"]],null,"backup:on"],
+  ["backup_stream_url","Stream URL","text",null,"e.g. your station's public stream as the backup for an STL feed","backup:stream"],
+  ["backup_device_backend","Driver","select","backends",null,"backup:device"],
+  ["backup_device_name","Input","text",null,"e.g. plughw:1,0 (press Refresh on the main Input to see the names)","backup:device"],
+  ["backup_receive_protocol","Receive","select",[["srt","SRT"],["icecast","Icecast push"],["udp","MPEG-TS over UDP"],["rtp","RTP"]],null,"backup:receive"],
+  ["backup_receive_port","Port","number",null,"Must differ from the main source's port","backup:receive"],
+  ["backup_receive_passphrase","SRT passphrase","password",null,"Optional, 10–79 characters","backup:receive","srt"],
+  ["backup_receive_latency_ms","SRT latency (ms)","number",null,null,"backup:receive","srt"],
+  ["backup_receive_password","Source password","password",null,"Senders use it as their Icecast source password","backup:receive","icecast"],
+  ["backup_receive_group","Multicast group","text",null,"Blank for unicast","backup:receive","udp rtp"],
+  ["backup_receive_sdp","SDP from the sender","textarea",null,"For RTP with PCM, Opus or AAC","backup:receive","rtp"],
+  ["backup_custom_input_args","ffmpeg input args","text",null,null,"backup:custom"],
+  ["backup_source_delay_s","Backup delay (s)","number",null,"How far the backup runs behind air (a web stream is often 10–30 s behind an STL)","backup:on"],
+  ["failover_after_s","Switch after no audio for (s)","number",null,"How long the main source can drop out before the backup takes over","backup:on"],
+  ["failover_silence_s","…or silence for (s)","number",null,"Main source below the silence level this long, while the backup isn't silent. 0 = don't switch on silence","backup:on"],
+  ["failover_return_s","Switch back after (s)","number",null,"How long the main source must be healthy again before switching back","backup:on"],
   ["Hourly archive"],
   ["archive_enabled","Record archive files","bool"],
   ["archive_dir","Folder","text"],
@@ -818,6 +848,13 @@ const OUT_FIELDS = [
   ["public","List in public directories","bool","icecast shoutcast",""],
   ["send_titles","Send song titles","bool","icecast shoutcast","From song identification (MP3/AAC streams)"],
   ["ttl","Multicast TTL","number","udp rtp","Only matters for multicast addresses"],
+  ["processing","Processing","select:off=Off,limiter=Limiter only,gentle=Gentle (evens out levels),broadcast=Broadcast (denser radio sound),heavy=Heavy (loud and dense),custom=Custom compressor","icecast shoutcast srt udp rtp","Compressor + limiter for this output only; the recording and grabs stay as they aired"],
+  ["ceiling_db","Limiter ceiling (dBFS)","number","icecast shoutcast srt udp rtp","Peaks never go above this; -1 suits most streams","proc"],
+  ["comp_threshold_db","Threshold (dBFS)","number","icecast shoutcast srt udp rtp","Compression starts above this level","custom"],
+  ["comp_ratio","Ratio","number","icecast shoutcast srt udp rtp","e.g. 4 = 4:1","custom"],
+  ["comp_attack_ms","Attack (ms)","number","icecast shoutcast srt udp rtp","","custom"],
+  ["comp_release_ms","Release (ms)","number","icecast shoutcast srt udp rtp","","custom"],
+  ["comp_makeup_db","Make-up gain (dB)","number","icecast shoutcast srt udp rtp","","custom"],
 ];
 const CODEC_LABELS = {mp3:"MP3", aac:"AAC", ogg:"Ogg Vorbis", opus:"Opus", mp2:"MPEG-1 Layer II (mp2)", pcm:"PCM (uncompressed)"};
 let outKinds = {}, outList = [];
@@ -835,7 +872,9 @@ function renderOutputEditor(r){
     const k = b.dataset.addout, kind = outKinds[k];
     outList.push({kind: k, enabled: true, name: `${kind.label} ${outList.length + 1}`, port: kind.port, codec: kind.codecs[0],
                   bitrate_kbps: k === "srt" || k === "udp" ? 256 : 128, mount: "/live", user: "source", mode: "caller",
-                  latency_ms: 200, ttl: 16, send_titles: true, public: false, tls: false});
+                  latency_ms: 200, ttl: 16, send_titles: true, public: false, tls: false,
+                  processing: "off", ceiling_db: -1, comp_threshold_db: -20, comp_ratio: 4, comp_attack_ms: 10,
+                  comp_release_ms: 200, comp_makeup_db: 6});
     drawOutCards();
   });
   drawOutCards();
@@ -846,9 +885,12 @@ function drawOutCards(){
   box.innerHTML = outList.map((o, i) => {
     const kind = outKinds[o.kind] || {label:o.kind, codecs:[]};
     const stat = live.find(x => x.id === o.id);
-    const rows = OUT_FIELDS.filter(([k, , , kinds]) => {
+    const proc = o.processing || "off";
+    const rows = OUT_FIELDS.filter(([k, , , kinds, , when]) => {
       const ks = kinds.split(" ");
       if (k === "host" && o.kind === "srt") return (o.mode || "caller") !== "listener";
+      if (when === "proc" && proc === "off") return false;
+      if (when === "custom" && proc !== "custom") return false;
       return ks.includes(o.kind);
     }).map(([k, label, type, , hint]) => {
       const v = o[k] ?? "";
@@ -868,7 +910,7 @@ function drawOutCards(){
         <button class="small" data-del="${i}" title="Remove this output">✕</button></div>${state}${rows}${sdp}</div>`;
   }).join("") || `<div class="dim" style="font-size:13px;margin:8px 0">No outputs.</div>`;
   box.querySelectorAll("[data-del]").forEach(b => b.onclick = e => { e.preventDefault(); collectOutputs(); outList.splice(+b.dataset.del, 1); drawOutCards(); });
-  box.querySelectorAll('select[data-k="mode"]').forEach(sel => sel.onchange = () => { collectOutputs(); drawOutCards(); });
+  box.querySelectorAll('select[data-k="mode"], select[data-k="processing"]').forEach(sel => sel.onchange = () => { collectOutputs(); drawOutCards(); });
   if (cfgCache && !cfgCache.can_edit) box.querySelectorAll("input,select,button").forEach(x => x.disabled = true);
 }
 function collectOutputs(){
@@ -891,7 +933,7 @@ async function openSettings(){
     if (type === "bool") input = `<input type="checkbox" id="f_${k}" ${v ? "checked" : ""}>`;
     else if (type === "select"){
       const o = opts === "backends" ? r.backends.map(b => [b, b]) : opts;
-      input = `<select id="f_${k}">` + o.map(([val, l]) => `<option value="${val}" ${String(val) === String(v || (k==="device_backend"?r.default_backend:"")) ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
+      input = `<select id="f_${k}">` + o.map(([val, l]) => `<option value="${val}" ${String(val) === String(v || ((k==="device_backend" || k==="backup_device_backend")?r.default_backend:"")) ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
     } else if (type === "device"){
       input = `<div style="display:flex;gap:6px"><input type="text" list="devlist" id="f_${k}" value="${esc(String(v ?? ""))}" style="flex:1"><button class="small" id="devrefresh">Refresh</button></div><datalist id="devlist"></datalist>`;
     } else if (type === "textarea"){
@@ -907,6 +949,14 @@ async function openSettings(){
   $("savecfg").disabled = !r.can_edit;
   renderOutputEditor(r);
   $("f_source_type").onchange = syncSource;
+  $("f_backup_enabled").onchange = syncSource;
+  $("f_backup_source_type").onchange = syncSource;
+  $("f_backup_receive_protocol").onchange = () => {
+    const def = {srt:9001, udp:5006, rtp:5006, icecast:8001}[$("f_backup_receive_protocol").value];
+    const port = $("f_backup_receive_port");
+    if ([9001, 5006, 8001].includes(+port.value) && def) port.value = def;
+    syncSource();
+  };
   $("f_receive_protocol").onchange = () => {
     const def = {srt:9000, udp:5004, rtp:5004, icecast:8000}[$("f_receive_protocol").value];
     const port = $("f_receive_port");
@@ -921,8 +971,19 @@ async function openSettings(){
 function syncSource(){
   const t = $("f_source_type").value;
   const proto = $("f_receive_protocol") ? $("f_receive_protocol").value : "";
+  const bOn = $("f_backup_enabled") && $("f_backup_enabled").checked;
+  const bt = $("f_backup_source_type") ? $("f_backup_source_type").value : "";
+  const bproto = $("f_backup_receive_protocol") ? $("f_backup_receive_protocol").value : "";
   document.querySelectorAll("#form > .frow[data-only]").forEach(r => {
-    const show = (!r.dataset.only || r.dataset.only === t) && (!r.dataset.proto || r.dataset.proto.split(" ").includes(proto));
+    const only = r.dataset.only;
+    let show;
+    if (only.startsWith("backup:")){
+      const want = only.slice(7);
+      show = want === "" || (bOn && (want === "on" || want === bt));
+      if (show && r.dataset.proto) show = r.dataset.proto.split(" ").includes(bproto);
+    } else {
+      show = (!only || only === t) && (!r.dataset.proto || r.dataset.proto.split(" ").includes(proto));
+    }
     r.style.display = show ? "" : "none";
   });
   if (t === "device") refreshDevices();
