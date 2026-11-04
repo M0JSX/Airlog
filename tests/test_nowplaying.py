@@ -57,6 +57,22 @@ def main() -> None:
     again = TrackLog(folder / "tracks.json")
     assert [t.title for t in again.tracks] == ["One", "Two", "Three"]
     assert again.current() is None and again.tracks[-1].end == T + 192
+
+    # The list matches the grab buffer: songs that ended before it are dropped (stored and listed),
+    # a song still playing is always kept.
+    import time
+    from airlog.nowplaying import Track
+    now = time.time()
+    buf = TrackLog(folder / "buf.json", retention_s=600)                     # a 10-minute buffer
+    for i, (start, end) in enumerate([(now - 1500, now - 1300), (now - 700, now - 550), (now - 300, now - 60),
+                                      (now - 60, None)]):
+        buf.begin(Track(start=start, end=end, artist="A", title=f"T{i}", key=str(i), last_seen=end or now))
+    assert [t.title for t in buf.tracks] == ["T1", "T2", "T3"], [t.title for t in buf.tracks]   # T0 left the buffer
+    assert [t["title"] for t in buf.recent(since=now - 500)] == ["T3", "T2"]                   # newest first; T1 out
+    reloaded = TrackLog(folder / "buf.json", retention_s=600)
+    assert "T0" not in [t.title for t in reloaded.tracks]
+    old = TrackLog(folder / "buf.json", retention_s=60)                      # buffer shortened in Settings
+    assert [t.title for t in old.tracks] == ["T3"], [t.title for t in old.tracks]
     print("nowplaying OK")
 
 

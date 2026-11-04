@@ -367,8 +367,9 @@ with a back-off. Recording is never affected.
   the current song is closed.
 - Only the 12-second samples are sent, and only while recording. Turn it off
   under **Settings → Song identification**.
-- The song list is kept in `tracks.json` in the grab buffer folder, holding the
-  last 1,000 songs.
+- The song list matches the grab buffer: songs drop off it once they've left the
+  buffer, since they can no longer be selected or grabbed. It's kept in
+  `tracks.json` in the grab buffer folder, so it survives restarts.
 - The Windows, Linux and macOS builds include it. From source, run
   `pip install shazamio`.
 

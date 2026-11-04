@@ -392,6 +392,9 @@ function renderStatus(){
     `<br>Pre-roll on downloads: ${s.grab_preroll_s}s`;
   renderNowPlaying();
   if (s.tracks_rev !== tracksRev){ tracksRev = s.tracks_rev; loadTracks(); }
+  else if (performance.now() - (renderStatus.songsAt || 0) > 10000 && document.querySelector(".tab.on").dataset.tab === "songs"){
+    renderStatus.songsAt = performance.now(); renderSongs();      // drop songs as the buffer moves past them
+  }
   if (!$("fmt").dataset.set){ $("fmt").value = s.grab_format; $("fmt").dataset.set = 1; }
 }
 
@@ -701,8 +704,10 @@ async function loadTracks(){
   if (document.querySelector(".tab.on").dataset.tab === "songs") renderSongs();
 }
 function renderSongs(){
+  // The list matches the grab buffer: songs that have fully dropped out of it aren't shown.
   const lo = bufStart();
-  $("songrows").innerHTML = tracks.map((tr, i) => {
+  const shown = tracks.map((tr, i) => [tr, i]).filter(([tr]) => lo == null || (tr.end ?? live() ?? Infinity) > lo);
+  $("songrows").innerHTML = shown.map(([tr, i]) => {
     const end = tr.end ?? live();
     const inBuf = lo != null && end != null && end > lo;
     const name = `${esc(tr.artist)} – ${esc(tr.title)}`;
