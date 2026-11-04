@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import nowplaying, sources
+from . import nowplaying, outputs, sources
 from .config import Config
 
 NO_WINDOW = sources.NO_WINDOW
@@ -331,7 +331,7 @@ class Engine:
         self.bpf = 2 * self.ch
         self.block_frames = self.sr // BLOCKS_PER_SEC
 
-        self.status = "stopped"           # stopped | starting | recording | reconnecting | error
+        self.status = "stopped"           # stopped | starting | recording | reconnecting | waiting | error
         self.last_error = ""
         self.logs: collections.deque[str] = collections.deque(maxlen=500)
         self.on_log: Callable[[str, bool], None] | None = None
@@ -360,6 +360,13 @@ class Engine:
         self._last_data = 0.0
         self._pending_new_segment = False
         self._reconnected = False
+
+        # Receiving a stream sent to us, and encoder outputs sending ours on.
+        self.receiving = cfg.source_type == "receive"
+        self._push = None                 # receive.PushServer for an Icecast-style push input
+        self.sender = ""                  # who is sending to us (Icecast push), for the UI
+        self.sender_since = 0.0
+        self.outputs = outputs.OutputSet(self)
 
         if self.spool.segments:
             threading.Thread(target=self._rebuild_peaks, name="peaks", daemon=True).start()
@@ -420,9 +427,14 @@ class Engine:
         if self.cfg.identify_songs:
             self.recognizer = nowplaying.Recognizer(self)
             self.recognizer.start()
+        self.outputs.start()
 
     def stop(self) -> None:
         self._running = False
+        self.outputs.stop()
+        if self._push is not None:
+            self._push.close()
+            self._push = None
         self.tracks.close(self.live_time() or time.time())
         p = self._proc
         if p and p.poll() is None:
@@ -485,6 +497,7 @@ class Engine:
 
     def _supervise(self) -> None:
         backoff = 2.0
+        announced_wait = False
         while self._running:
             try:
                 cmd = self._capture_cmd()
@@ -493,16 +506,36 @@ class Engine:
                 self.log(str(e), error=True)
                 self._sleep(5)
                 continue
-            self.log("Source: " + sources.describe(self.cfg))
+            sender = None
+            if self.receiving:
+                if not announced_wait:
+                    self.log("Waiting for a sender: " + sources.describe(self.cfg))
+                    announced_wait = True
+                self.status = "waiting"
+                if sources.is_push(self.cfg):
+                    sender = self._wait_for_push()
+                    if sender is None:
+                        continue
+                    hint = sender.format_hint
+                    if hint:
+                        i = cmd.index("pipe:0")
+                        cmd[i - 1:i - 1] = ["-f", hint]
+            else:
+                self.log("Source: " + sources.describe(self.cfg))
             try:
                 self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                              stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+                                              stdin=subprocess.PIPE if sender else subprocess.DEVNULL,
+                                              creationflags=NO_WINDOW)
             except OSError as e:
                 self.status = "error"
                 self.log(f"Could not run ffmpeg ({self.cfg.ffmpeg_path}): {e}", error=True)
+                if sender:
+                    sender.close()
                 self._sleep(10)
                 continue
             threading.Thread(target=self._pump_stderr, args=(self._proc,), daemon=True).start()
+            if sender:
+                threading.Thread(target=self._feed_push, args=(sender, self._proc), daemon=True).start()
             self._last_data = time.monotonic()
             got_any = self._read_loop(self._proc)
             rc = self._proc.poll()
@@ -511,14 +544,64 @@ class Engine:
                     self._proc.kill()
                 except Exception:
                     pass
+            if sender:
+                sender.close()
+                if self._push:
+                    self._push.busy.clear()
+                self.sender = ""
             if not self._running:
                 break
+            if self.receiving:
+                # A sender going away is normal for an input: wait quietly for it to come back.
+                if got_any:
+                    self.log("Sender stopped; waiting for it to come back")
+                    announced_wait = True
+                self.status = "waiting"
+                self._sleep(1)
+                continue
             self.status = "reconnecting"
             self.log(f"Source ended (ffmpeg exit {self._proc.returncode}); retrying in {backoff:.0f}s",
                      error=True)
             self._sleep(backoff)
             backoff = 2.0 if got_any else min(backoff * 2, 30.0)
         self.status = "stopped"
+
+    def _wait_for_push(self):
+        """Icecast-style push input: start the listener if needed and wait for a sender."""
+        from .receive import PushServer
+        if self._push is None:
+            try:
+                self._push = PushServer(int(self.cfg.receive_port), self.cfg.receive_password, self.log)
+            except OSError as e:
+                self.status = "error"
+                self.log(f"Stream input: {e}", error=True)
+                self._sleep(10)
+                return None
+        while self._running:
+            s = self._push.next_sender(timeout=0.5)
+            if s is not None:
+                self._push.busy.set()
+                self.sender, self.sender_since = s.peer, time.time()
+                self._push.current_peer = s.peer
+                self.log(f"Stream input: receiving from {s.peer}"
+                         + (f" ({s.content_type})" if s.content_type else ""))
+                return s
+        return None
+
+    def _feed_push(self, sender, proc: subprocess.Popen) -> None:
+        try:
+            for data in sender.read_body():
+                if not self._running:
+                    break
+                proc.stdin.write(data)
+                proc.stdin.flush()
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
 
     def _sleep(self, s: float) -> None:
         end = time.monotonic() + s
@@ -624,6 +707,7 @@ class Engine:
                     self._close_archive()
 
         self.spool.write(pcm, start, new_segment=self._pending_new_segment)
+        self.outputs.feed(pcm)
         self._pending_new_segment = False
         self._measure(pcm, start)
         self.total += n

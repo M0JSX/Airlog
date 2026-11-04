@@ -156,9 +156,13 @@ def install(from_config: Path | None, data_dir: Path | None, shortcuts: bool = T
         _run(["sc.exe", "sdset", SERVICE_NAME, sd.replace("(A;;CCLCSWLOCRRC;;;IU)", "(A;;CCLCSWRPWPDTLOCRRC;;;IU)")])
 
     port = config_port(CONFIG)
+    # Any port Airlog.exe listens on (web UI, the receive input, SRT-listener outputs), TCP and UDP,
+    # on private/domain networks only.
+    rules = "; ".join(
+        f"New-NetFirewallRule -DisplayName {_ps_quote(FIREWALL_RULE)} -Direction Inbound -Action Allow "
+        f"-Program {_ps_quote(exe)} -Protocol {proto} -Profile Private,Domain | Out-Null" for proto in ("TCP", "UDP"))
     _powershell(f"Get-NetFirewallRule -DisplayName {_ps_quote(FIREWALL_RULE)} -ErrorAction SilentlyContinue | "
-                f"Remove-NetFirewallRule; New-NetFirewallRule -DisplayName {_ps_quote(FIREWALL_RULE)} -Direction Inbound "
-                f"-Action Allow -Program {_ps_quote(exe)} -Protocol TCP -LocalPort {port} -Profile Private,Domain | Out-Null")
+                f"Remove-NetFirewallRule; {rules}")
     if shortcuts:   # Setup.exe makes its own
         _shortcuts(exe, create=True)
 

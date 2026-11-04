@@ -78,6 +78,13 @@ footer{display:flex;justify-content:space-between;color:var(--dim);font-size:12p
 .sheet h3{margin:16px 0 8px;font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
 .frow{display:grid;grid-template-columns:170px 1fr;gap:8px;align-items:center;margin:6px 0}
 .frow .hint{grid-column:2;color:var(--dimmer);font-size:12px;margin-top:-4px}
+.outs{display:flex;flex-wrap:wrap;gap:4px 14px}
+.outs .o{white-space:nowrap}
+.outcard{border:1px solid var(--line);border-radius:8px;padding:6px 12px 10px;margin:10px 0;background:var(--panel)}
+.outcard .ohead{display:flex;align-items:center;gap:8px;margin:4px 0 2px}
+.outcard .ohead input[type=text]{flex:1;font-weight:600}
+.outcard textarea,.frow textarea{width:100%;min-height:70px;font:12px var(--mono);color:var(--fg);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 8px;box-sizing:border-box}
+.sdp{font:11px var(--mono);white-space:pre;color:var(--dim);background:var(--panel2);border-radius:6px;padding:6px 8px;margin-top:6px;overflow:auto}
 .frow input[type=checkbox]{justify-self:start;width:18px;height:18px}
 .frow input[type=text],.frow input[type=password],.frow input[type=number],.frow select{width:100%}
 .sheetbtns{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
@@ -100,6 +107,7 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
     <div class="st"><span id="dot" class="dot"></span><span id="stxt">CONNECTING</span><span id="station" class="station"></span></div>
     <div class="sub" id="source"></div>
     <div class="sub" id="file"></div>
+    <div class="sub outs" id="outs"></div>
   </div>
   <div class="np" id="np" title="Identified by Shazam">
     <img id="npart" src="" alt="">
@@ -258,12 +266,37 @@ function clampBuf(t){
   if (lo != null) t = Math.max(t, lo);
   return t;
 }
+function maxSpan(){
+  // Zooming out stops at the grab buffer's length (its setting, so a buffer still filling up after a
+  // restart doesn't make the view jump about), and at 2 hours.
+  const b = st && st.buffer_minutes ? st.buffer_minutes * 60 : 7200;
+  return Math.max(60, Math.min(7200, b));
+}
+function clampEnd(end){
+  // Scrolling back stops where the buffer starts: the left edge of the view never goes past the
+  // oldest audio you can still grab. (Until the buffer has filled a whole view, the view ends at live.)
+  const lo = bufStart(), hi = live() ?? serverNow();
+  if (lo != null) end = Math.max(end, lo + span);
+  return Math.min(end, hi);
+}
 function view(){
   let end;
   if (frozenEnd != null) end = frozenEnd;
   else if (follow) end = live() ?? serverNow();
-  else end = viewEnd ?? serverNow();
+  else end = clampEnd(viewEnd ?? serverNow());
   return [end - span, end];
+}
+
+function renderOutputs(list){
+  const el = $("outs");
+  if (!list.length){ el.innerHTML = ""; return; }
+  const icon = {connected:["●","ok"], sending:["●","ok"], connecting:["○","warn"], waiting:["○","warn"], error:["⚠","bad"], off:["○","dim"], starting:["○","dim"]};
+  el.innerHTML = list.map(o => {
+    const [i, c] = icon[o.state] || ["○", "dim"];
+    const what = {connected:"connected", sending:"sending", connecting:"connecting…", waiting:"waiting for a receiver", error:o.detail, off:"off", starting:"starting"}[o.state] || o.state;
+    const tip = `${o.target} · ${o.codec}` + (o.detail && o.state !== "error" ? ` · ${o.detail}` : "") + (o.dropped ? ` · ${o.dropped} blocks dropped (network too slow?)` : "");
+    return `<span class="o" title="${esc(tip)}">→ ${esc(o.name)} <span class="${c}">${i} ${esc(what)}</span></span>`;
+  }).join("");
 }
 
 // ------------------------------------------------------------ api
@@ -284,6 +317,7 @@ async function pollStatus(){
   try {
     const s = await api("/api/status");
     st = s; stAt = performance.now();
+    if (s.buffer_minutes !== spanOptsFor) buildSpanOptions();
     renderStatus();
   } catch(e){
     $("stxt").textContent = "OFFLINE"; $("dot").className = "dot";
@@ -310,7 +344,7 @@ async function pollPeaks(){
 // ------------------------------------------------------------ status rendering
 function renderStatus(){
   const s = st;
-  const map = {recording:["REC","rec"], starting:["CONNECTING",""], reconnecting:["RECONNECTING",""], error:["ERROR",""], stopped:["STOPPED",""]};
+  const map = {recording:["REC","rec"], starting:["CONNECTING",""], reconnecting:["RECONNECTING",""], waiting:["WAITING",""], error:["ERROR",""], stopped:["STOPPED",""]};
   const [txt, cls] = map[s.status] || [s.status, ""];
   $("stxt").textContent = txt;
   $("stxt").style.color = s.status === "recording" ? "var(--red)" : (s.status === "stopped" ? "var(--fg)" : "var(--amber)");
@@ -319,8 +353,14 @@ function renderStatus(){
   $("station").textContent = s.station;
   document.title = `Airlog — ${s.station}`;
   let src = (s.source_type === "stream" ? "Stream: " : "") + s.source;
+  if (s.receive){
+    const label = {srt:"SRT", udp:"UDP", rtp:"RTP", icecast:"Icecast push"}[s.receive.protocol] || s.receive.protocol;
+    src = s.status === "waiting" ? `Waiting for a sender: ${label} on port ${s.receive.port}`
+        : `Receiving ${label} on port ${s.receive.port}` + (s.receive.sender ? ` from ${s.receive.sender}` : "");
+  }
   if ((s.status === "error" || s.status === "reconnecting") && s.last_error) src += "  ·  " + s.last_error;
   $("source").textContent = src;
+  renderOutputs(s.outputs || []);
   if (s.archive){
     const lt = live() ?? s.server_time;
     $("file").textContent = `Writing ${s.archive.name}  ·  ${dur(lt - s.archive.start)}  ·  next file at ${hms(s.archive.boundary,false).slice(0,5)}`;
@@ -600,23 +640,27 @@ wave.addEventListener("wheel", e => {
   const delta = e.deltaY || e.deltaX;
   if (e.ctrlKey || e.metaKey){
     const [t0, t1] = view(), anchor = xToT(e.offsetX), f = delta > 0 ? 1.25 : 0.8;
-    const ns = Math.max(5, Math.min(7200, span * f));
+    const ns = Math.max(5, Math.min(maxSpan(), span * f));
     if (!follow){ const r = (anchor - t0) / (t1 - t0); viewEnd = anchor + (1 - r) * ns; }
     setSpan(ns, false);
     return;
   }
   const [, t1] = view(), lt = live() ?? serverNow();
-  const ne = Math.min(lt, t1 + delta / 100 * span * 0.1);
+  const ne = clampEnd(t1 + delta / 100 * span * 0.1);
   if (ne >= lt - 0.01 && delta > 0) follow = true; else { follow = false; viewEnd = ne; }
   $("follow").checked = follow; peakDirty = true;
 }, {passive:false});
 
 function setSpan(s, keepCentre=true){
+  s = Math.min(s, maxSpan());
   if (!follow && keepCentre){ const [t0, t1] = view(); viewEnd = (t0 + t1)/2 + s/2; }
   span = s; localStorage.setItem("airlog.span", Math.round(s));
-  const sp = $("span"); const hit = SPANS.find(x => Math.abs(x[0] - s) < 0.5);
-  if (!hit){ let o = sp.querySelector("option[data-custom]"); if (!o){ o = document.createElement("option"); o.dataset.custom = 1; sp.prepend(o); } o.value = s; o.textContent = dur(s); }
-  sp.value = hit ? hit[0] : s;
+  if (!follow) viewEnd = clampEnd(viewEnd ?? serverNow());
+  const sp = $("span");
+  const hit = [...sp.options].find(o => !o.dataset.custom && Math.abs(+o.value - s) < 0.5);
+  const custom = sp.querySelector("option[data-custom]");
+  if (hit){ if (custom) custom.remove(); sp.value = hit.value; }
+  else { const o = custom || document.createElement("option"); if (!custom){ o.dataset.custom = 1; sp.prepend(o); } o.value = s; o.textContent = dur(s); sp.value = s; }
   peakDirty = true;
 }
 
@@ -711,7 +755,14 @@ const FIELDS = [
   ["station_name","Station name","text"],
   ["autostart","Record when the service starts","bool"],
   ["Source"],
-  ["source_type","Source","select",[["stream","Internet stream"],["device","Sound card input"],["custom","Custom ffmpeg input"]]],
+  ["source_type","Source","select",[["stream","Internet stream"],["device","Sound card input"],["receive","Receive a stream (SRT / UDP / RTP / Icecast push)"],["custom","Custom ffmpeg input"]]],
+  ["receive_protocol","Receive","select",[["srt","SRT (another Airlog, OBS, an SRT codec)"],["icecast","Icecast push (BUTT, Mixxx, playout stream-out)"],["udp","MPEG-TS over UDP"],["rtp","RTP"]],"Senders connect to this recorder. Open the port in its firewall","receive"],
+  ["receive_port","Port","number",null,"SRT, UDP and RTP use UDP; Icecast push uses TCP","receive"],
+  ["receive_passphrase","SRT passphrase","password",null,"Optional, 10–79 characters; the sender must use the same","receive","srt"],
+  ["receive_latency_ms","SRT latency (ms)","number",null,"Higher survives a worse network; the sender's setting also counts","receive","srt"],
+  ["receive_password","Source password","password",null,"Senders use it as their Icecast source password (any user name and mount)","receive","icecast"],
+  ["receive_group","Multicast group","text",null,"Blank for unicast; e.g. 239.1.1.1 to join a multicast stream","receive","udp rtp"],
+  ["receive_sdp","SDP from the sender","textarea",null,"Needed for RTP with PCM (L16), Opus or AAC; paste it from the sender. MPEG audio (mp2/mp3) works without","receive","rtp"],
   ["stream_url","Stream URL","text",null,"Icecast, Shoutcast, HLS (.m3u8), .pls / .m3u","stream"],
   ["device_backend","Driver","select","backends","Linux service: use alsa","device"],
   ["device_name","Input","device",null,"Pick from the list, or type e.g. plughw:1,0","device"],
@@ -745,6 +796,88 @@ const FIELDS = [
   ["announce","Announce on the network","bool",null,"Lets Airlog Viewer find this recorder automatically (mDNS / Bonjour)"],
 ];
 let cfgCache = null;
+
+// Encoder outputs: one card per output, fields shown for its type.
+const OUT_FIELDS = [
+  // key, label, type, kinds it applies to, hint
+  ["host","Server / receiver","text","icecast shoutcast srt-caller udp rtp","Host name or IP, e.g. stream.example.org or 192.168.1.30"],
+  ["port","Port","number","icecast shoutcast srt udp rtp",""],
+  ["mode","SRT mode","select:caller=Caller (connect to the receiver),listener=Listener (the receiver connects here)","srt","Caller suits most setups; Listener when the receiver can't accept connections"],
+  ["mount","Mount","text","icecast","e.g. /live"],
+  ["user","User","text","icecast","Usually 'source'"],
+  ["password","Source password","password","icecast shoutcast","Shoutcast 2: password:#streamid"],
+  ["tls","Use TLS (https)","bool","icecast",""],
+  ["passphrase","SRT passphrase","password","srt","Optional, 10–79 characters; the receiver must use the same"],
+  ["latency_ms","SRT latency (ms)","number","srt","200 on a LAN; 1000–2000 over the internet"],
+  ["codec","Codec","codec","icecast shoutcast srt udp rtp",""],
+  ["bitrate_kbps","Bitrate (kbps)","number","icecast shoutcast srt udp rtp","Not used for PCM"],
+  ["stream_name","Stream name","text","icecast shoutcast","Blank = station name"],
+  ["genre","Genre","text","icecast shoutcast",""],
+  ["description","Description","text","icecast",""],
+  ["url","Website","text","icecast shoutcast",""],
+  ["public","List in public directories","bool","icecast shoutcast",""],
+  ["send_titles","Send song titles","bool","icecast shoutcast","From song identification (MP3/AAC streams)"],
+  ["ttl","Multicast TTL","number","udp rtp","Only matters for multicast addresses"],
+];
+const CODEC_LABELS = {mp3:"MP3", aac:"AAC", ogg:"Ogg Vorbis", opus:"Opus", mp2:"MPEG-1 Layer II (mp2)", pcm:"PCM (uncompressed)"};
+let outKinds = {}, outList = [];
+function renderOutputEditor(r){
+  outKinds = r.output_kinds || {};
+  outList = JSON.parse(JSON.stringify(r.config.outputs || []));
+  const f = $("form");
+  f.insertAdjacentHTML("beforeend", `<h3>Outputs (encoder)</h3>
+    <div class="hint" style="color:var(--dimmer);font-size:12px">Send what's being recorded on to a stream server, another Airlog or an STL codec. An output that can't keep up drops audio; the recording is never affected.</div>
+    <div id="outcards"></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">` +
+    Object.entries(outKinds).map(([k, v]) => `<button class="small" data-addout="${k}">+ ${esc(v.label)}</button>`).join("") + `</div>`);
+  f.querySelectorAll("[data-addout]").forEach(b => b.onclick = e => {
+    e.preventDefault(); collectOutputs();
+    const k = b.dataset.addout, kind = outKinds[k];
+    outList.push({kind: k, enabled: true, name: `${kind.label} ${outList.length + 1}`, port: kind.port, codec: kind.codecs[0],
+                  bitrate_kbps: k === "srt" || k === "udp" ? 256 : 128, mount: "/live", user: "source", mode: "caller",
+                  latency_ms: 200, ttl: 16, send_titles: true, public: false, tls: false});
+    drawOutCards();
+  });
+  drawOutCards();
+}
+function drawOutCards(){
+  const box = $("outcards");
+  const live = (st && st.outputs) || [];
+  box.innerHTML = outList.map((o, i) => {
+    const kind = outKinds[o.kind] || {label:o.kind, codecs:[]};
+    const stat = live.find(x => x.id === o.id);
+    const rows = OUT_FIELDS.filter(([k, , , kinds]) => {
+      const ks = kinds.split(" ");
+      if (k === "host" && o.kind === "srt") return (o.mode || "caller") !== "listener";
+      return ks.includes(o.kind);
+    }).map(([k, label, type, , hint]) => {
+      const v = o[k] ?? "";
+      let input;
+      if (type === "bool") input = `<input type="checkbox" data-k="${k}" ${v ? "checked" : ""}>`;
+      else if (type === "codec") input = `<select data-k="${k}">` + kind.codecs.map(c => `<option value="${c}" ${c === v ? "selected" : ""}>${CODEC_LABELS[c] || c}</option>`).join("") + `</select>`;
+      else if (type.startsWith("select:")) input = `<select data-k="${k}">` + type.slice(7).split(",").map(x => { const [val, l] = x.split("="); return `<option value="${val}" ${val === v ? "selected" : ""}>${esc(l)}</option>`; }).join("") + `</select>`;
+      else input = `<input type="${type}" data-k="${k}" value="${esc(String(v))}" ${type === "number" ? 'step="any"' : ""}>`;
+      return `<div class="frow"><label>${label}</label>${input}${hint ? `<div class="hint">${esc(hint)}</div>` : ""}</div>`;
+    }).join("");
+    const sdp = stat && stat.sdp ? `<div class="frow"><label>SDP for the receiver</label><div class="sdp">${esc(stat.sdp)}</div></div>` : "";
+    const state = stat ? ` <span class="dim" style="font-size:12px">${esc(stat.state)}${stat.detail ? " · " + esc(stat.detail) : ""}</span>` : "";
+    return `<div class="outcard" data-i="${i}">
+      <div class="ohead"><input type="checkbox" data-k="enabled" title="On" ${o.enabled !== false ? "checked" : ""}>
+        <input type="text" data-k="name" value="${esc(o.name || "")}">
+        <span class="dim">${esc(kind.label)}</span>
+        <button class="small" data-del="${i}" title="Remove this output">✕</button></div>${state}${rows}${sdp}</div>`;
+  }).join("") || `<div class="dim" style="font-size:13px;margin:8px 0">No outputs.</div>`;
+  box.querySelectorAll("[data-del]").forEach(b => b.onclick = e => { e.preventDefault(); collectOutputs(); outList.splice(+b.dataset.del, 1); drawOutCards(); });
+  box.querySelectorAll('select[data-k="mode"]').forEach(sel => sel.onchange = () => { collectOutputs(); drawOutCards(); });
+  if (cfgCache && !cfgCache.can_edit) box.querySelectorAll("input,select,button").forEach(x => x.disabled = true);
+}
+function collectOutputs(){
+  document.querySelectorAll("#outcards .outcard").forEach(card => {
+    const o = outList[+card.dataset.i];
+    card.querySelectorAll("[data-k]").forEach(el => { o[el.dataset.k] = el.type === "checkbox" ? el.checked : el.value; });
+  });
+  return outList;
+}
 async function openSettings(){
   let r; try { r = await api("/api/config"); } catch(e){ return toast(e.message, "bad"); }
   cfgCache = r;
@@ -752,6 +885,7 @@ async function openSettings(){
   for (const fd of FIELDS){
     if (fd.length === 1){ f.insertAdjacentHTML("beforeend", `<h3>${fd[0]}</h3>`); continue; }
     const [k, label, type, opts, hint, only] = fd;
+    if (k === "outputs") continue;
     const v = r.config[k];
     let input;
     if (type === "bool") input = `<input type="checkbox" id="f_${k}" ${v ? "checked" : ""}>`;
@@ -760,8 +894,10 @@ async function openSettings(){
       input = `<select id="f_${k}">` + o.map(([val, l]) => `<option value="${val}" ${String(val) === String(v || (k==="device_backend"?r.default_backend:"")) ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
     } else if (type === "device"){
       input = `<div style="display:flex;gap:6px"><input type="text" list="devlist" id="f_${k}" value="${esc(String(v ?? ""))}" style="flex:1"><button class="small" id="devrefresh">Refresh</button></div><datalist id="devlist"></datalist>`;
+    } else if (type === "textarea"){
+      input = `<textarea id="f_${k}" spellcheck="false">${esc(String(v ?? ""))}</textarea>`;
     } else input = `<input type="${type === "number" ? "number" : type}" step="any" id="f_${k}" value="${esc(String(v ?? ""))}">`;
-    f.insertAdjacentHTML("beforeend", `<div class="frow" data-only="${only || ""}"><label for="f_${k}">${label}</label>${input}${hint ? `<div class="hint">${hint}</div>` : ""}</div>`);
+    f.insertAdjacentHTML("beforeend", `<div class="frow" data-only="${only || ""}" data-proto="${fd[6] || ""}"><label for="f_${k}">${label}</label>${input}${hint ? `<div class="hint">${hint}</div>` : ""}</div>`);
   }
   f.insertAdjacentHTML("beforeend", `<div class="dim" style="font-size:12px;margin-top:10px">${r.ffmpeg ? "ffmpeg " + r.ffmpeg + " found on the recorder" : "<span class='bad'>ffmpeg not found on the recorder</span>"}</div>`);
   if (!r.can_edit){
@@ -769,7 +905,14 @@ async function openSettings(){
     f.querySelectorAll("input,select,button").forEach(x => x.disabled = true);
   }
   $("savecfg").disabled = !r.can_edit;
+  renderOutputEditor(r);
   $("f_source_type").onchange = syncSource;
+  $("f_receive_protocol").onchange = () => {
+    const def = {srt:9000, udp:5004, rtp:5004, icecast:8000}[$("f_receive_protocol").value];
+    const port = $("f_receive_port");
+    if ([9000, 5004, 8000].includes(+port.value) && def) port.value = def;
+    syncSource();
+  };
   $("f_device_backend").onchange = refreshDevices;
   $("devrefresh").onclick = e => { e.preventDefault(); refreshDevices(); };
   syncSource();
@@ -777,7 +920,11 @@ async function openSettings(){
 }
 function syncSource(){
   const t = $("f_source_type").value;
-  document.querySelectorAll(".frow[data-only]").forEach(r => r.style.display = (!r.dataset.only || r.dataset.only === t) ? "" : "none");
+  const proto = $("f_receive_protocol") ? $("f_receive_protocol").value : "";
+  document.querySelectorAll("#form > .frow[data-only]").forEach(r => {
+    const show = (!r.dataset.only || r.dataset.only === t) && (!r.dataset.proto || r.dataset.proto.split(" ").includes(proto));
+    r.style.display = show ? "" : "none";
+  });
   if (t === "device") refreshDevices();
 }
 async function refreshDevices(){
@@ -794,6 +941,7 @@ async function saveSettings(){
     const [k, , type] = fd; const el = $("f_" + k); if (!el) continue;
     out[k] = type === "bool" ? el.checked : el.value;
   }
+  out.outputs = collectOutputs();
   try {
     await api("/api/config", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(out)});
     $("settings").classList.remove("on"); toast("Settings saved — recorder restarting", "ok");
@@ -805,8 +953,17 @@ $("cancel").onclick = () => $("settings").classList.remove("on");
 $("savecfg").onclick = saveSettings;
 
 // ------------------------------------------------------------ wiring
-SPANS.forEach(([s, l]) => $("span").insertAdjacentHTML("beforeend", `<option value="${s}">${l}</option>`));
-setSpan(span);
+let spanOptsFor = undefined;
+function buildSpanOptions(){
+  // Only offer view widths that fit in the grab buffer, plus "whole buffer" if it isn't one of them.
+  spanOptsFor = st ? st.buffer_minutes : undefined;
+  const sp = $("span"), max = maxSpan();
+  sp.innerHTML = "";
+  SPANS.filter(([s]) => s <= max + 0.5).forEach(([s, l]) => sp.insertAdjacentHTML("beforeend", `<option value="${s}">${l}</option>`));
+  if (!SPANS.some(([s]) => Math.abs(s - max) < 0.5)) sp.insertAdjacentHTML("beforeend", `<option value="${max}">Whole buffer (${Math.round(max/60)} min)</option>`);
+  setSpan(span, false);
+}
+buildSpanOptions();
 $("span").onchange = e => setSpan(+e.target.value);
 $("follow").onchange = e => { follow = e.target.checked; if (!follow) viewEnd = view()[1]; peakDirty = true; };
 $("livebtn").onclick = () => { follow = true; $("follow").checked = true; peakDirty = true; };

@@ -152,6 +152,25 @@ def run(report: Path) -> int:
         return f"zeroconf {zeroconf.__version__} (network announcement for Airlog Viewer)"
 
     check("discovery", discovery_check)
+
+    def encoders_check():
+        # Codecs the encoder outputs offer (and the receive input decodes). SRT is reported, not
+        # required: a build without it can still do Icecast, Shoutcast, UDP and RTP.
+        import subprocess
+        from .sources import NO_WINDOW
+        enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True,
+                             creationflags=NO_WINDOW).stdout
+        prot = subprocess.run(["ffmpeg", "-hide_banner", "-protocols"], capture_output=True, text=True,
+                              creationflags=NO_WINDOW).stdout
+        need = ["libmp3lame", "aac", "libopus", "libvorbis", "mp2", "s302m", "pcm_s16be"]
+        missing = [c for c in need if f" {c} " not in enc]
+        if missing:
+            raise RuntimeError("ffmpeg lacks encoders: " + ", ".join(missing))
+        outs = prot.split("Output:")[-1]
+        have = [p for p in ("srt", "rtp", "udp", "icecast") if f"\n  {p}\n" in outs or f" {p}\n" in outs]
+        return "encoders OK; protocols: " + ", ".join(have) + ("" if "srt" in have else " (no SRT in this ffmpeg)")
+
+    check("encoders", encoders_check)
     lines.append("RESULT  " + ("OK" if ok else "FAILED"))
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 0 if ok else 1

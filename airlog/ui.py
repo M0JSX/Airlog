@@ -360,7 +360,7 @@ class App(tk.Tk):
     # ================================================================ engine control
     def _source_configured(self) -> bool:
         c = self.cfg
-        return bool((c.source_type == "stream" and c.stream_url) or (c.source_type == "device")
+        return bool((c.source_type == "stream" and c.stream_url) or (c.source_type in ("device", "receive"))
                     or (c.source_type == "custom" and c.custom_input_args))
 
     def _make_engine(self):

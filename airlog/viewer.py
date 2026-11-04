@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import queue
+import socket
 import sys
 import threading
 import time
@@ -227,9 +228,23 @@ def probe(url: str, password: str | None) -> Probe:
             return Probe("locked", with_password=bool(password))
         return Probe("offline", error=f"HTTP {e.code}")
     except (OSError, ValueError) as e:
-        return Probe("offline", error=str(getattr(e, "reason", e)))
+        return Probe("offline", error=_why(e))
     return Probe("online", station=str(d.get("station", "")), status=str(d.get("status", "")),
                  version=str(d.get("version", "")), error=str(d.get("last_error") or ""))
+
+
+def _why(e: Exception) -> str:
+    """A short, human reason for a failed connection."""
+    r = getattr(e, "reason", e)
+    text = str(r)
+    if isinstance(r, socket.gaierror) or "Name or service not known" in text or "nodename nor servname" in text \
+            or "getaddrinfo failed" in text:
+        return "address not found"
+    if isinstance(r, ConnectionRefusedError) or "refused" in text.lower():
+        return "nothing answering on that port"
+    if isinstance(r, (TimeoutError, socket.timeout)) or "timed out" in text:
+        return "timed out"
+    return text
 
 
 def signed_in_url(url: str, password: str | None) -> str:
@@ -244,7 +259,7 @@ def signed_in_url(url: str, password: str | None) -> str:
             return url
         raise Unreachable(f"HTTP {e.code}") from None
     except (OSError, ValueError) as e:
-        raise Unreachable(str(getattr(e, "reason", e))) from None
+        raise Unreachable(_why(e)) from None
     tok = d.get("token")
     return url + "login?t=" + urllib.parse.quote(tok) if tok else url
 
@@ -283,10 +298,10 @@ def run_gui(open_target: str | None = None) -> int:
     heading = tkfont.nametofont("TkDefaultFont").copy()
     heading.configure(weight="bold", size=heading.cget("size") + 2 if heading.cget("size") > 0 else heading.cget("size") - 3)
     ttk.Label(top, text="Recorders", font=heading).pack(side="left")
-    netlbl = ttk.Label(top, text="", foreground="#777")
+    netlbl = ttk.Label(top, text="", style="Hint.TLabel")
     netlbl.pack(side="right")
 
-    msg = ttk.Label(root, text="", foreground="#777", padding=(12, 0, 12, 8))
+    msg = ttk.Label(root, text="", style="Hint.TLabel", padding=(12, 0, 12, 8))
     msg.pack(side="bottom", fill="x")
     bottom = ttk.Frame(root, padding=12)
     bottom.pack(side="bottom", fill="x")
@@ -305,9 +320,38 @@ def run_gui(open_target: str | None = None) -> int:
     tree.configure(yscrollcommand=sb.set)
     tree.pack(side="left", fill="both", expand=True)
     sb.pack(side="right", fill="y")
-    for tag, colour in (("rec", "#1a8f3a"), ("err", "#c0392b"), ("off", "#888888"), ("lock", "#b7791f"),
-                        ("found", "#2b6cb0")):
-        tree.tag_configure(tag, foreground=colour)
+    # Colours that read on the list's actual background: macOS dark mode gives Tk a dark list, where
+    # the light-mode greys and blues are unreadable. Re-checked periodically so switching
+    # appearance while the viewer is open also works.
+    palettes = {
+        False: {"rec": "#1a8f3a", "err": "#c0392b", "off": "#6b6b6b", "lock": "#a5650a", "found": "#1d5fa8",
+                "hint": "#6b6b6b"},
+        True: {"rec": "#5fd97f", "err": "#ff7b72", "off": "#b4b4b4", "lock": "#f5c451", "found": "#8cc4ff",
+               "hint": "#b4b4b4"},
+    }
+    current_dark: list = [None]
+
+    def is_dark() -> bool:
+        try:
+            bg = style.lookup("Treeview", "fieldbackground") or style.lookup("Treeview", "background") \
+                or tree.winfo_toplevel().cget("background")
+            r, g, b = (c / 65535 for c in root.winfo_rgb(bg))
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.45
+        except Exception:
+            return False
+
+    def apply_palette() -> None:
+        dark = is_dark()
+        if dark == current_dark[0]:
+            return
+        current_dark[0] = dark
+        pal = palettes[dark]
+        for tag in ("rec", "err", "off", "lock", "found"):
+            tree.tag_configure(tag, foreground=pal[tag])
+        style.configure("Hint.TLabel", foreground=pal["hint"])
+        style.configure("Error.TLabel", foreground=pal["err"])
+
+    apply_palette()
 
     open_btn = ttk.Button(bottom, text="Open", width=10)
     add_btn = ttk.Button(bottom, text="Add…")
@@ -454,6 +498,9 @@ def run_gui(open_target: str | None = None) -> int:
                     ev[1]()
         except queue.Empty:
             pass
+        pump.ticks = getattr(pump, "ticks", 0) + 1
+        if pump.ticks % 13 == 0:            # ~every 2 s: follow light/dark appearance changes
+            apply_palette()
         root.after(150, pump)
 
     def follow_moves():
@@ -519,12 +566,12 @@ def run_gui(open_target: str | None = None) -> int:
         ttk.Label(f, text="Address").grid(row=1, column=0, sticky="w", pady=3, padx=(0, 10))
         ttk.Entry(f, textvariable=addr, width=34).grid(row=1, column=1, sticky="ew", pady=3)
         ttk.Label(f, text="e.g. 192.168.1.20, studio-pc or studio-pc:9000 (port 8080 if left out)",
-                  foreground="#777").grid(row=2, column=1, sticky="w")
+                  style="Hint.TLabel").grid(row=2, column=1, sticky="w")
         ttk.Label(f, text="Password").grid(row=3, column=0, sticky="w", pady=(10, 3))
         ttk.Entry(f, textvariable=pw, show="•", width=34).grid(row=3, column=1, sticky="ew", pady=(10, 3))
         hint = ("Saved in the keychain. Leave blank to keep it." if has_pw else
                 "Leave blank if the recorder has no web password.")
-        ttk.Label(f, text=hint, foreground="#777").grid(row=4, column=1, sticky="w")
+        ttk.Label(f, text=hint, style="Hint.TLabel").grid(row=4, column=1, sticky="w")
         cb = ttk.Checkbutton(f, text="Remember the password in the keychain" if secrets.available
                              else f"Passwords can't be saved: {secrets.why}", variable=rem)
         if not secrets.available:
@@ -533,7 +580,7 @@ def run_gui(open_target: str | None = None) -> int:
         forget = tk.BooleanVar(value=False)
         if has_pw:
             ttk.Checkbutton(f, text="Forget the saved password", variable=forget).grid(row=6, column=1, sticky="w")
-        err = ttk.Label(f, text="", foreground="#c0392b")
+        err = ttk.Label(f, text="", style="Error.TLabel")
         err.grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
         saved: list = []
 

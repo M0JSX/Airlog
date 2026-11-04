@@ -63,6 +63,9 @@ def input_args(cfg: Config) -> list[str]:
             return ["-f", backend, "-i", name or "default"]
         raise ValueError(f"Unknown device backend {backend!r}")
 
+    if cfg.source_type == "receive":
+        return receive_args(cfg)
+
     if cfg.source_type == "custom":
         args = shlex.split(cfg.custom_input_args, posix=not sys.platform.startswith("win"))
         if "-i" not in args:
@@ -72,7 +75,47 @@ def input_args(cfg: Config) -> list[str]:
     raise ValueError(f"Unknown source type {cfg.source_type!r}")
 
 
+RECEIVE_LABELS = {"srt": "SRT", "udp": "UDP (MPEG-TS)", "rtp": "RTP", "icecast": "Icecast push"}
+
+
+def receive_args(cfg: Config) -> list[str]:
+    """ffmpeg input for a stream sent to this machine. Icecast push arrives on stdin (see receive.py)."""
+    proto, port = cfg.receive_protocol, int(cfg.receive_port)
+    if not 1 <= port <= 65535:
+        raise ValueError("Receive port must be 1-65535")
+    if port == int(cfg.web_port):
+        raise ValueError(f"Receive port {port} is the web UI's port; pick another")
+    group = cfg.receive_group.strip() or "0.0.0.0"
+    if proto == "srt":
+        args = ["-mode", "listener", "-latency", str(max(20, int(cfg.receive_latency_ms)) * 1000)]
+        if cfg.receive_passphrase:
+            if not 10 <= len(cfg.receive_passphrase) <= 79:
+                raise ValueError("An SRT passphrase must be 10-79 characters")
+            args += ["-passphrase", cfg.receive_passphrase]
+        return args + ["-i", f"srt://0.0.0.0:{port}"]
+    if proto == "udp":
+        return ["-f", "mpegts", "-i", f"udp://{group}:{port}?fifo_size=1000000&overrun_nonfatal=1"]
+    if proto == "rtp":
+        if cfg.receive_sdp.strip():
+            sdp = cfg.effective_spool_dir() / "receive.sdp"
+            sdp.parent.mkdir(parents=True, exist_ok=True)
+            sdp.write_text(cfg.receive_sdp.strip() + "\n", encoding="utf-8")
+            return ["-protocol_whitelist", "file,udp,rtp", "-i", str(sdp)]
+        return ["-i", f"rtp://{group}:{port}"]
+    if proto == "icecast":
+        if not cfg.receive_password:
+            raise ValueError("Set a receive password: senders must use it as their source password")
+        return ["-i", "pipe:0"]
+    raise ValueError(f"Unknown receive protocol {proto!r}")
+
+
+def is_push(cfg: Config) -> bool:
+    return cfg.source_type == "receive" and cfg.receive_protocol == "icecast"
+
+
 def describe(cfg: Config) -> str:
+    if cfg.source_type == "receive":
+        return f"receive {RECEIVE_LABELS.get(cfg.receive_protocol, cfg.receive_protocol)} on port {cfg.receive_port}"
     if cfg.source_type == "stream":
         return cfg.stream_url or "(no URL)"
     if cfg.source_type == "device":

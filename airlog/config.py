@@ -39,12 +39,22 @@ class Config:
     # "stream"  : internet stream URL (Icecast/Shoutcast/HLS/anything ffmpeg reads)
     # "device"  : sound card input (dshow / avfoundation / pulse / alsa)
     # "custom"  : raw ffmpeg input arguments, for anything else
+    # "receive" : a stream sent *to* Airlog (SRT listener, UDP, RTP or an Icecast-style push)
     source_type: str = "stream"
     stream_url: str = ""
     device_backend: str = ""          # blank = platform default
     device_name: str = ""             # e.g. 'Line In (USB Audio CODEC)', ':0', 'default', 'hw:1,0'
     custom_input_args: str = ""       # e.g. '-f lavfi -i sine=frequency=440'
     ffmpeg_path: str = "ffmpeg"
+
+    # --- Receive a stream (source_type "receive") ---
+    receive_protocol: str = "srt"     # srt | udp | rtp | icecast
+    receive_port: int = 9000
+    receive_latency_ms: int = 200     # SRT
+    receive_passphrase: str = ""      # SRT (10-79 characters, blank = unencrypted)
+    receive_password: str = ""        # Icecast push: the source password senders must use
+    receive_group: str = ""           # UDP/RTP: multicast group to join (blank = unicast)
+    receive_sdp: str = ""             # RTP: SDP from the sender (needed for L16, Opus, AAC)
 
     # Streams arrive behind real time (encoder + server buffering). Set this to
     # the delay in seconds and timestamps/file splits are shifted back to match air.
@@ -92,6 +102,9 @@ class Config:
     web_password: str = ""            # blank = no login (trusted LAN only)
     trusted_lan: bool = False         # no password: let any machine on the network change settings
     announce: bool = True             # advertise on the LAN (mDNS) so Airlog Viewer can find it
+
+    # --- Encoder outputs: send what's recorded on to Icecast / Shoutcast / SRT / UDP / RTP ---
+    outputs: list = field(default_factory=list)
 
     # Unknown keys from newer/older versions are preserved here.
     extra: dict = field(default_factory=dict)
