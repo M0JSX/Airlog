@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "airlog"
 version = "1.6.2"
-description = "Radio station logger: hourly archive files plus instant grabs of what just aired"
+description = "Radio station logger and audio hub: hourly archive, instant grabs, stream and sound card inputs and outputs with processing"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Jonathan" }]
