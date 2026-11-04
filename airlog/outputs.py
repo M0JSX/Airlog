@@ -2,6 +2,7 @@
 
     icecast    Icecast 2 source (HTTP PUT, falling back to the legacy SOURCE method), optional TLS
     shoutcast  Shoutcast v1 source protocol (DNAS 1.x, or 2.x in legacy mode)
+    device     a sound card output (PortAudio via `sounddevice`): feed a transmitter, a desk, monitors
     srt        SRT caller or listener (MPEG-TS): another Airlog, an SRT-capable codec, OBS…
     udp        MPEG-TS over UDP, unicast or multicast
     rtp        RTP (L16, MPEG audio, Opus or AAC), with an SDP description for the receiver
@@ -34,16 +35,19 @@ if TYPE_CHECKING:
 
 MASK = "********"
 QUEUE_BLOCKS = 20            # 2 s of audio at 10 blocks/s; older audio is dropped beyond that
-KINDS = ("icecast", "shoutcast", "srt", "udp", "rtp")
-KIND_LABELS = {"icecast": "Icecast", "shoutcast": "Shoutcast", "srt": "SRT", "udp": "UDP (MPEG-TS)", "rtp": "RTP"}
+KINDS = ("icecast", "shoutcast", "srt", "udp", "rtp", "device")
+KIND_LABELS = {"icecast": "Icecast", "shoutcast": "Shoutcast", "srt": "SRT", "udp": "UDP (MPEG-TS)", "rtp": "RTP",
+               "device": "Sound card"}
 CODECS = {
     "icecast": ("mp3", "aac", "ogg", "opus"),
     "shoutcast": ("mp3", "aac"),
     "srt": ("aac", "mp2", "mp3", "opus", "pcm"),
     "udp": ("aac", "mp2", "mp3", "opus", "pcm"),
     "rtp": ("pcm", "mp2", "mp3", "opus", "aac"),
+    "device": ("pcm",),
 }
-DEFAULT_PORT = {"icecast": 8000, "shoutcast": 8000, "srt": 9000, "udp": 5004, "rtp": 5004}
+DEFAULT_PORT = {"icecast": 8000, "shoutcast": 8000, "srt": 9000, "udp": 5004, "rtp": 5004, "device": 0}
+DEVICE_BACKLOG_BLOCKS = 3    # sound card: never let more than ~0.3 s pile up ahead of the card (keeps latency fixed)
 BITRATE_RANGE = {"mp3": (32, 320), "aac": (32, 512), "ogg": (48, 500), "opus": (16, 510), "mp2": (32, 384)}
 DEFAULTS = {
     "id": "", "name": "", "enabled": True, "kind": "icecast", "codec": "mp3", "bitrate_kbps": 128,
@@ -55,6 +59,8 @@ DEFAULTS = {
     "mode": "caller", "latency_ms": 200, "passphrase": "",
     # UDP / RTP multicast
     "ttl": 16,
+    # Sound card
+    "device": "", "buffer_ms": 200,
     # Processing (this output only; the archive and grabs stay as they aired)
     "processing": "off", "ceiling_db": -1.0,
     "comp_threshold_db": -20.0, "comp_ratio": 4.0, "comp_attack_ms": 10.0, "comp_release_ms": 200.0,
@@ -125,13 +131,13 @@ def normalize_outputs(raw, previous: list | None = None) -> list[dict]:
         try:
             for k in ("enabled", "tls", "public", "send_titles"):
                 o[k] = bool(o[k])
-            for k in ("bitrate_kbps", "port", "latency_ms", "ttl"):
+            for k in ("bitrate_kbps", "port", "latency_ms", "ttl", "buffer_ms"):
                 o[k] = int(float(o[k]))
             for k in ("ceiling_db", "comp_threshold_db", "comp_ratio", "comp_attack_ms", "comp_release_ms",
                       "comp_makeup_db", "mb_bass_db", "mb_lowmid_db", "mb_presence_db", "mb_air_db", "mb_drive_db"):
                 o[k] = float(o[k])
             for k in ("name", "kind", "codec", "host", "mount", "user", "password", "stream_name", "genre",
-                      "description", "url", "mode", "passphrase", "processing"):
+                      "description", "url", "mode", "passphrase", "processing", "device"):
                 o[k] = str(o[k]).strip() if k not in SECRETS else str(o[k])
         except (TypeError, ValueError):
             raise ValueError(f"Output {i + 1}: a number field isn't a number") from None
@@ -142,12 +148,15 @@ def normalize_outputs(raw, previous: list | None = None) -> list[dict]:
             o["codec"] = CODECS[o["kind"]][0]
         if not o["name"]:
             o["name"] = f"{KIND_LABELS[o['kind']]} {i + 1}"
-        if not 1 <= o["port"] <= 65535:
+        if o["kind"] == "device":
+            o["port"], o["host"] = 0, ""
+            o["buffer_ms"] = max(20, min(2000, o["buffer_ms"]))
+        elif not 1 <= o["port"] <= 65535:
             raise ValueError(f"{label}: port must be 1–65535")
         lo, hi = BITRATE_RANGE.get(o["codec"], (0, 10_000))
         if o["codec"] in BITRATE_RANGE:
             o["bitrate_kbps"] = max(lo, min(hi, o["bitrate_kbps"]))
-        listener = o["kind"] == "srt" and o["mode"] == "listener"
+        listener = (o["kind"] == "srt" and o["mode"] == "listener") or o["kind"] == "device"
         if o["enabled"] and not o["host"] and not listener:
             raise ValueError(f"{label}: enter the server or receiver address")
         if re.search(r"[\s/?#@]", o["host"]):
@@ -194,6 +203,8 @@ def mask_outputs(outputs: list) -> list[dict]:
 
 def describe(o: dict) -> str:
     k = o["kind"]
+    if k == "device":
+        return "sound card: " + (o["device"].split(" | ")[0] if o["device"] else "default output")
     if k == "icecast":
         return f"{'https' if o['tls'] else 'http'}://{o['host']}:{o['port']}{o['mount']}"
     if k == "shoutcast":
@@ -307,6 +318,8 @@ class Output:
         self.sdp_path = None              # RTP: where ffmpeg writes the SDP (it can appear a moment after connecting)
         self.proc: subprocess.Popen | None = None
         self.sock: socket.socket | None = None
+        self.stream = None                # sound card output stream
+        self.underruns = 0                # sound card: blocks of silence played because no audio was ready
         self.running = False
         self._last_logged = ("", "")
         self._title_sent = None
@@ -333,7 +346,7 @@ class Output:
                 self.sdp = self.sdp_path.read_text(encoding="utf-8")
             except OSError:
                 pass
-        return {"id": o["id"], "name": o["name"], "kind": o["kind"], "codec": o["codec"],
+        return {"id": o["id"], "name": o["name"], "kind": o["kind"], "codec": o["codec"], "underruns": self.underruns,
                 "processing": describe_processing(o),
                 "target": describe(o), "state": self.state, "detail": self.detail, "since": self.since,
                 "sent": self.sent, "dropped": self.dropped, "sdp": self.sdp}
@@ -344,7 +357,7 @@ class Output:
         self.state, self.detail = state, detail
         if (state, detail) != self._last_logged and state not in ("starting",):
             self._last_logged = (state, detail)
-            words = {"connected": "connected", "sending": "sending", "waiting": "waiting",
+            words = {"connected": "connected", "sending": "sending", "waiting": "waiting", "playing": "playing on",
                      "connecting": "connecting", "error": "problem", "off": "stopped"}
             self.engine.log(f"Output \"{self.o['name']}\" {words.get(state, state)}"
                             + (f": {detail}" if detail else ""), error=error)
@@ -362,6 +375,12 @@ class Output:
         self.state = "off"
 
     def _kill(self) -> None:
+        st = self.stream
+        if st is not None:
+            try:
+                st.abort()                # unblocks a write in progress
+            except Exception:
+                pass
         p, s = self.proc, self.sock
         if s is not None:
             try:
@@ -438,9 +457,108 @@ class Output:
             pass
 
     def _session(self) -> bool:
+        if self.o["kind"] == "device":
+            return self._device_session()
         if self.o["kind"] in ("icecast", "shoutcast"):
             return self._server_session()
         return self._ffmpeg_session()
+
+    # Sound card: PortAudio plays the PCM; ffmpeg only runs if there's processing to apply
+    def _device_session(self) -> bool:
+        o, e = self.o, self.engine
+        sd = sounddevice_module()
+        index, label, extra = resolve_device(sd, o["device"])
+        self._set("connecting", label)
+        try:
+            stream = sd.RawOutputStream(samplerate=e.sr, channels=e.ch, dtype="int16", device=index,
+                                        latency=o["buffer_ms"] / 1000, extra_settings=extra)
+            stream.start()
+        except Exception as ex:
+            raise OutputError(f"can't open {label}: {ex}"
+                              + (" (it may not support " + f"{e.sr} Hz {e.ch}-channel; try another entry for the same "
+                                 "card, e.g. 'default' or the MME/DirectSound one)" if "rate" in str(ex).lower()
+                                 or "channel" in str(ex).lower() else "")) from None
+        self.stream = stream
+        src: queue.Queue = self.q
+        af = process_filter(o)
+        if af:
+            # ffmpeg as a filter only: PCM in, processed PCM out, at the same rate and channels.
+            cmd = [e.cfg.ffmpeg_path, "-hide_banner", "-nostdin", "-nostats", "-loglevel", "error",
+                   "-f", "s16le", "-ar", str(e.sr), "-ac", str(e.ch), "-i", "pipe:0",
+                   "-af", af, "-f", "s16le", "-ar", str(e.sr), "-ac", str(e.ch), "pipe:1"]
+            try:
+                proc = self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                                    stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+            except OSError as ex:
+                raise OutputError(f"can't run ffmpeg for processing: {ex}") from None
+            threading.Thread(target=self._pump_pcm, args=(proc,), daemon=True).start()
+            processed: queue.Queue[bytes] = queue.Queue(maxsize=QUEUE_BLOCKS)
+            threading.Thread(target=self._read_processed, args=(proc, processed), daemon=True).start()
+            src = processed
+        else:
+            self._drain()                 # start with live audio, not a backlog
+        self._set("playing", label)
+        block_frames = e.block_frames
+        silence = bytes(block_frames * e.bpf)
+        # A cushion of audio in the card absorbs timing jitter: fill it to the buffer setting before
+        # playing, top it up as audio arrives, and only feed silence when the card is about to run dry
+        # (the source has stalled). After a gap, build the cushion up again before resuming.
+        prefill = max(2, round(o["buffer_ms"] / 100))
+        card_frames = int(o["buffer_ms"] / 1000 * e.sr)
+        filling = True
+        while self.running:
+            ready = src.qsize()
+            if ready >= (prefill if filling else 1):
+                filling = False
+                while src.qsize() > prefill + DEVICE_BACKLOG_BLOCKS:    # a burst: keep the delay fixed
+                    try:
+                        src.get_nowait()
+                        self.dropped += 1
+                    except queue.Empty:
+                        break
+                data = src.get_nowait()
+            else:
+                try:
+                    free = stream.write_available
+                except Exception:
+                    free = card_frames
+                if free < card_frames - block_frames:
+                    time.sleep(0.01)      # the card still has audio queued: wait for the source
+                    continue
+                data = silence            # the card is about to run dry: keep it fed, no glitch
+                self.underruns += 1
+                filling = True
+            try:
+                stream.write(data)        # blocks while the card's buffer is full: this paces the loop
+            except Exception as ex:
+                if not self.running:
+                    break
+                raise OutputError(f"{label} stopped: {ex} (unplugged?)") from None
+            self.sent += len(data)
+            if self.proc is not None and self.proc.poll() is not None and self.running:
+                raise OutputError("the processing stage stopped unexpectedly")
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
+        self.stream = None
+        return True
+
+    def _read_processed(self, proc: subprocess.Popen, out: queue.Queue) -> None:
+        block = self.engine.block_frames * self.engine.bpf
+        while self.running:
+            data = proc.stdout.read(block)
+            if not data:
+                return
+            try:
+                out.put_nowait(data)
+            except queue.Full:
+                try:
+                    out.get_nowait()
+                except queue.Empty:
+                    pass
+                out.put_nowait(data)
 
     # SRT / UDP / RTP: ffmpeg does the network side
     def _ffmpeg_session(self) -> bool:
@@ -690,6 +808,65 @@ def _send_title(o: dict, title: str, engine: "Engine") -> None:
             engine.log(f"Output \"{o['name']}\": song title not accepted ({code} {reason})")
     except (OutputError, OSError):
         pass
+
+
+# ---------------------------------------------------------------- sound cards
+def sounddevice_module():
+    """The sounddevice (PortAudio) module, or an OutputError saying how to get it."""
+    import sys
+    try:
+        import sounddevice
+        return sounddevice
+    except OSError:                       # the module is there but the PortAudio library isn't
+        if sys.platform.startswith("linux"):
+            raise OutputError("sound card output needs PortAudio: sudo apt install libportaudio2") from None
+        raise OutputError("sound card output: the PortAudio library couldn't be loaded") from None
+    except ImportError:
+        raise OutputError("sound card output isn't available in this build (sounddevice not installed)") from None
+
+
+def _hostapi_name(sd, dev: dict) -> str:
+    try:
+        return sd.query_hostapis(dev["hostapi"])["name"]
+    except Exception:
+        return ""
+
+
+def list_output_devices() -> tuple[list[dict], str]:
+    """([{value, label}], error). The value is 'name | host API', stable across reboots, unlike indexes."""
+    try:
+        sd = sounddevice_module()
+        devs = sd.query_devices()
+    except OutputError as e:
+        return [], str(e)
+    except Exception as e:  # noqa: BLE001
+        return [], f"can't list sound cards: {e}"
+    out = [{"value": "", "label": "System default output"}]
+    for d in devs:
+        if d.get("max_output_channels", 0) > 0:
+            api = _hostapi_name(sd, d)
+            out.append({"value": f"{d['name']} | {api}", "label": f"{d['name']} ({api}, {d['max_output_channels']} ch)"})
+    return out, ""
+
+
+def resolve_device(sd, spec: str):
+    """(index or None for the default, label, extra_settings) for a saved 'name | host API'."""
+    if not spec:
+        return None, "the default sound card", None
+    name, _, api = spec.partition(" | ")
+    devs = [(i, d) for i, d in enumerate(sd.query_devices()) if d.get("max_output_channels", 0) > 0]
+    exact = [i for i, d in devs if d["name"] == name and (not api or _hostapi_name(sd, d) == api)]
+    loose = [i for i, d in devs if d["name"] == name] or [i for i, d in devs if name.lower() in d["name"].lower()]
+    pick = (exact or loose or [None])[0]
+    if pick is None:
+        raise OutputError(f"sound card '{name}' not found (unplugged or renamed?)")
+    extra = None
+    if "WASAPI" in _hostapi_name(sd, sd.query_devices(pick)):
+        try:
+            extra = sd.WasapiSettings(auto_convert=True)   # let Windows convert the sample rate
+        except Exception:
+            extra = None
+    return pick, f"sound card '{name}'", extra
 
 
 # ---------------------------------------------------------------- the set

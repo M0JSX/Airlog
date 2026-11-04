@@ -477,6 +477,11 @@ def create_app(holder: Holder) -> Flask:
         threading.Thread(target=holder.restart, args=(was or cfg.autostart,), daemon=True).start()
         return jsonify(ok=True)
 
+    @app.get("/api/output_devices")
+    def output_devices():
+        devs, error = outputs.list_output_devices()
+        return jsonify(devices=devs, error=error)
+
     @app.get("/api/devices")
     def devices():
         backend = request.args.get("backend") or sources.default_backend()

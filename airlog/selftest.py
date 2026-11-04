@@ -190,6 +190,17 @@ def run(report: Path) -> int:
         return f"{len(outputs.PROCESSING) - 1} processing chains run"
 
     check("processing", processing_check)
+
+    def soundcard_check():
+        # Sound card outputs need PortAudio to load; the machine needn't have a sound card.
+        from . import outputs
+        sd = outputs.sounddevice_module()
+        devs, err = outputs.list_output_devices()
+        if err:
+            raise RuntimeError(err)
+        return f"sounddevice {sd.__version__}, PortAudio {sd.get_portaudio_version()[1]}; {len(devs) - 1} output device(s)"
+
+    check("sound card output", soundcard_check)
     lines.append("RESULT  " + ("OK" if ok else "FAILED"))
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 0 if ok else 1
