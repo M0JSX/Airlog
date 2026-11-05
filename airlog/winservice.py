@@ -19,6 +19,7 @@ import sys
 import traceback
 from pathlib import Path
 
+from . import lifecycle
 from .config import config_dir, default_data_dir
 from .servicecore import NO_WINDOW, config_port, migrate_config, open_window, responding, serve_until, stamp, wait_until
 
@@ -75,6 +76,7 @@ def run_service() -> None:
             self.stop_event = win32event.CreateEvent(None, 0, 0, None)
 
         def SvcStop(self):
+            lifecycle.begin_shutdown()
             self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
             win32event.SetEvent(self.stop_event)
 

@@ -1,11 +1,11 @@
 ; Inno Setup script for Airlog Viewer. Built by build_windows.ps1:
-;   iscc /DAppVersion=1.6.4 packaging\viewer.iss
+;   iscc /DAppVersion=1.6.5 packaging\viewer.iss
 ; Output: dist\Airlog-Viewer-Setup-<version>.exe
 ;
 ; A per-user install (no admin prompt): the viewer only opens recorders, it records nothing.
 
 #ifndef AppVersion
-  #define AppVersion "1.6.4"
+  #define AppVersion "1.6.5"
 #endif
 
 [Setup]
