@@ -73,6 +73,43 @@ def main() -> None:
     assert "T0" not in [t.title for t in reloaded.tracks]
     old = TrackLog(folder / "buf.json", retention_s=60)                      # buffer shortened in Settings
     assert [t.title for t in old.tracks] == ["T3"], [t.title for t in old.tracks]
+
+    # Failure handling: one or two missed checks are skipped quietly; from the third the page says
+    # Shazam can't be reached, the log says why (once), and checks back off. Recovery is logged once.
+    import asyncio
+    from airlog import nowplaying
+    f = FakeEngine(folder)
+    r = Recognizer(f)
+    r.state = "listening"
+    assert r._failed(asyncio.TimeoutError()) == 0 and r._failed(asyncio.TimeoutError()) == 0
+    assert r.state == "listening" and f.lines == [], f.lines
+    d3 = r._failed(asyncio.TimeoutError())
+    assert r.state == "failing" and len(f.lines) == 1 and "3 checks in a row" in f.lines[0], f.lines
+    assert "no answer from Shazam within 30 s" in f.lines[0], f.lines[0]
+    assert d3 == 30 and r._failed(asyncio.TimeoutError()) == 60          # backs off
+    assert len(f.lines) == 1                                             # not logged every time
+    r._ok()
+    assert r.state == "listening" and r.failures == 0 and f.lines[-1] == "Song identification is working again"
+    r._failed(asyncio.TimeoutError())
+    r._ok()
+    assert f.lines.count("Song identification is working again") == 1    # a single blip isn't news
+
+    class RateLimited(Exception):
+        pass
+    for _ in range(2):
+        r._failed(RateLimited("429"))
+    assert r._failed(RateLimited("Too many requests (429)")) >= 120 and "rate-limiting" in f.lines[-1], f.lines[-1]
+    assert nowplaying.describe_failure(ValueError("")) == "ValueError"
+
+    class FakeShazam:
+        def __init__(self, http_client=None):
+            self.http_client = http_client
+    shz, client = nowplaying.make_shazam(FakeShazam)
+    try:
+        import shazamio  # noqa: F401
+        assert client is not None and shz.http_client is client and client.retry_options.attempts == 2
+    except ImportError:
+        assert client is None                                            # falls back to shazamio's default
     print("nowplaying OK")
 
 

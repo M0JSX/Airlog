@@ -412,8 +412,9 @@ takes over.
 This uses [shazamio](https://github.com/shazamio/ShazamIO), an *unofficial*
 client for Shazam's private app API. It needs no account or key. Shazam doesn't
 support it, so it can stop working without notice, and heavy use may be
-rate-limited. When Shazam can't be reached, the page says so and Airlog retries
-with a back-off. Recording is never affected.
+rate-limited. An occasional slow or missed answer is skipped quietly; after three
+misses in a row the page says Shazam can't be reached, the log says why (no
+answer, or rate-limited), and Airlog checks less often until it's back. Recording is never affected.
 
 - Shazam reports how far into the song the sample was, so each song's start time
   is estimated from that. Treat the times as a guide, accurate to a second or
