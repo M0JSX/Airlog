@@ -156,13 +156,7 @@ def install(from_config: Path | None, data_dir: Path | None, shortcuts: bool = T
         _run(["sc.exe", "sdset", SERVICE_NAME, sd.replace("(A;;CCLCSWLOCRRC;;;IU)", "(A;;CCLCSWRPWPDTLOCRRC;;;IU)")])
 
     port = config_port(CONFIG)
-    # Any port Airlog.exe listens on (web UI, the receive input, SRT-listener outputs), TCP and UDP,
-    # on private/domain networks only.
-    rules = "; ".join(
-        f"New-NetFirewallRule -DisplayName {_ps_quote(FIREWALL_RULE)} -Direction Inbound -Action Allow "
-        f"-Program {_ps_quote(exe)} -Protocol {proto} -Profile Private,Domain | Out-Null" for proto in ("TCP", "UDP"))
-    _powershell(f"Get-NetFirewallRule -DisplayName {_ps_quote(FIREWALL_RULE)} -ErrorAction SilentlyContinue | "
-                f"Remove-NetFirewallRule; {rules}")
+    _powershell(firewall_script(INSTALL_DIR))
     if shortcuts:   # Setup.exe makes its own
         _shortcuts(exe, create=True)
 
@@ -170,6 +164,18 @@ def install(from_config: Path | None, data_dir: Path | None, shortcuts: bool = T
     if not wait_until(lambda: responding(port), 30):
         raise RuntimeError(f"Service installed but not answering on port {port}; see {LOG}")
     print(f"{stamp()} Installed; running from {exe}")
+
+
+def firewall_script(install_dir: Path) -> str:
+    """PowerShell that (re)creates the inbound rules, on private/domain networks only, TCP and UDP, for
+    every program in Airlog that listens: Airlog.exe (web UI, Icecast-style push input) and the bundled
+    ffmpeg.exe (SRT / UDP / RTP receive, SRT-listener outputs). A service gets no "allow?" prompt, so
+    anything not covered here is silently blocked."""
+    rules = [f"New-NetFirewallRule -DisplayName {_ps_quote(FIREWALL_RULE)} -Direction Inbound -Action Allow "
+             f"-Program {_ps_quote(install_dir / prog)} -Protocol {proto} -Profile Private,Domain | Out-Null"
+             for prog in ("Airlog.exe", "ffmpeg.exe") for proto in ("TCP", "UDP")]
+    return (f"Get-NetFirewallRule -DisplayName {_ps_quote(FIREWALL_RULE)} -ErrorAction SilentlyContinue | "
+            "Remove-NetFirewallRule; " + "; ".join(rules))
 
 
 def uninstall() -> None:

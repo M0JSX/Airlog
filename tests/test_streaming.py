@@ -164,6 +164,17 @@ print("   srt:", d)
 a.stop(); b.stop()
 
 
+p = free_port(socket.SOCK_DGRAM)                 # nothing listening at all (e.g. blocked by a firewall)
+a = engine("A_srtnone", source_type="custom", custom_input_args=TONE, outputs=outputs.normalize_outputs(
+    [{"kind": "srt", "host": "127.0.0.1", "port": p}]))
+a.start()
+assert wait(lambda: a.outputs.status()[0]["state"] == "error", 20), a.outputs.status()
+d = a.outputs.status()[0]["detail"]
+assert "nothing answered" in d and "UDP" in d and "firewall" in d, d
+print("   srt, nobody listening:", d)
+a.stop()
+
+
 # ---------------------------------------------------------------- fake servers
 class FakeServer:
     """Accepts connections and answers with a script; records what it was sent."""
