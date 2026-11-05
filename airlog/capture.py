@@ -13,7 +13,7 @@ import time
 from array import array
 from typing import TYPE_CHECKING
 
-from . import sources
+from . import lifecycle, sources
 from .config import Config
 
 if TYPE_CHECKING:
@@ -154,7 +154,7 @@ class Capture:
                 if self.push:
                     self.push.busy.clear()
                 self.sender = ""
-            if not self.running:
+            if not self.running or lifecycle.ended_by_shutdown():
                 break
             if self.receiving:
                 # A sender going away is normal for an input: wait quietly for it to come back.
@@ -208,7 +208,7 @@ class Capture:
     def _pump_stderr(self, proc: subprocess.Popen) -> None:
         for raw in iter(proc.stderr.readline, b""):
             line = raw.decode(errors="replace").strip()
-            if line:
+            if line and not lifecycle.SHUTTING_DOWN.is_set():     # ffmpeg reporting its own stop: noise
                 self.log("ffmpeg: " + line[:300])
 
     def _read_loop(self, proc: subprocess.Popen) -> bool:

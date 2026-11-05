@@ -26,6 +26,7 @@ import threading
 import traceback
 from pathlib import Path
 
+from . import lifecycle
 from .config import config_dir, default_data_dir
 from .servicecore import ask, config_port, migrate_config, open_window, responding, serve_until, stamp, tell, wait_until
 
@@ -97,8 +98,12 @@ def run_service(config: Path | None = None) -> None:
     if IS_MAC:
         _log_to_file(MAC_LOG)          # Linux: stdout goes to the journal
     stop = threading.Event()
+    def on_signal(*_):
+        lifecycle.begin_shutdown()       # first, so a child that dies with us isn't taken for a dropout
+        stop.set()
+
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(sig, lambda *_: stop.set())
+        signal.signal(sig, on_signal)
 
     def wait():
         while not stop.wait(1):
@@ -170,6 +175,8 @@ SupplementaryGroups=audio
 StateDirectory=airlog
 StateDirectoryMode=0750
 {env}ExecStart={shlex.join(cmd + ["--service", "--config", str(LINUX_CONFIG)])}
+# Only Airlog gets SIGTERM; it stops its own ffmpeg processes, so none is mistaken for a dropout.
+KillMode=mixed
 Restart=always
 RestartSec=3
 TimeoutStopSec=20

@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import nowplaying, outputs, sources
+from . import lifecycle, nowplaying, outputs, sources
 from .capture import Capture
 from .config import Config
 
@@ -651,13 +651,15 @@ class Engine:
     def _emit(self, pcm: bytes, n: int) -> None:
         start = self.t0 + self.total / self.sr
         cfg = self.cfg
-        if cfg.archive_enabled:
+        if cfg.archive_enabled and not lifecycle.SHUTTING_DOWN.is_set():   # no new files while stopping
             offset = 0
             t = start
             while offset < n:
                 if self.archive is None or self.archive.broken:
                     if self.archive is not None:
                         self._close_archive()
+                        if lifecycle.ended_by_shutdown():
+                            break         # stopping: don't start a stub file for the last moments
                     self.archive = ArchiveFile(self, t)
                     self.files_started += 1
                 to_boundary = int(round((self.archive.boundary - t) * self.sr))

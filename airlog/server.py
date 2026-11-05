@@ -26,6 +26,7 @@ from pathlib import Path
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory, stream_with_context
 
 from . import __version__, discovery, outputs, sources
+from . import lifecycle
 from .config import Config
 from .engine import Engine
 
@@ -506,6 +507,14 @@ def main() -> None:
     port = args.port or cfg.web_port
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    import signal
+
+    def on_signal(*_):
+        lifecycle.begin_shutdown()
+        raise KeyboardInterrupt
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, on_signal)
     holder = Holder(cfg, cfg_path)
     if cfg.autostart:
         holder.engine.start()
@@ -518,7 +527,10 @@ def main() -> None:
     except ImportError:
         logging.getLogger("werkzeug").setLevel(logging.WARNING)
         app.run(host=host, port=port, threaded=True, use_reloader=False)
+    except KeyboardInterrupt:
+        pass
     finally:
+        lifecycle.begin_shutdown()
         if holder.advertiser:
             holder.advertiser.close()
         holder.engine.stop()

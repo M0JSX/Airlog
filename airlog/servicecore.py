@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import lifecycle
 from .config import Config
 
 NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0
@@ -47,8 +48,10 @@ def serve_until(config_path: Path, wait) -> None:
     try:
         wait()
     finally:
+        lifecycle.begin_shutdown()
         print(f"{stamp()} Service stopping", flush=True)
-        srv.close()
+        # The web server isn't closed: closing its sockets under its own loop is what logged the
+        # "Bad file descriptor" tracebacks, and it's a daemon thread that ends with the process.
         if holder.advertiser:
             holder.advertiser.close()
         holder.engine.stop()

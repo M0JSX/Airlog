@@ -117,6 +117,10 @@ sudo apt remove airlog                  # .deb: removes the service and the app
 
 - Settings: `/var/lib/airlog/config.json` (edit them in the UI's Settings).
 - The installer opens the web port in ufw or firewalld if either is active.
+- The unit uses `KillMode=mixed`: on stop, systemd signals Airlog first, and Airlog
+  closes the archive file and its ffmpeg processes itself. Upgrading with the
+  `.deb` adds this to an existing unit; for a tarball install, run
+  `sudo airlog --install-service` again to refresh it.
 - Machines without a real-time clock (e.g. a Raspberry Pi) rely on NTP; the
   service waits for time sync at boot so file names and grab times are right
   after a power cut.

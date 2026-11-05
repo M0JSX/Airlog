@@ -27,7 +27,7 @@ import urllib.parse
 import uuid
 from typing import TYPE_CHECKING
 
-from . import __version__
+from . import __version__, lifecycle
 from .sources import NO_WINDOW
 
 if TYPE_CHECKING:
@@ -418,7 +418,7 @@ class Output:
                 self._set("error", f"{type(e).__name__}: {e}"[:200], error=True)
             finally:
                 self._kill()
-            if not self.running:
+            if not self.running or lifecycle.SHUTTING_DOWN.is_set():
                 break
             if ok and self.state != "error":
                 self._set("connecting", "reconnecting")
@@ -536,6 +536,8 @@ class Output:
                 raise OutputError(f"{label} stopped: {ex} (unplugged?)") from None
             self.sent += len(data)
             if self.proc is not None and self.proc.poll() is not None and self.running:
+                if lifecycle.ended_by_shutdown():
+                    break
                 raise OutputError("the processing stage stopped unexpectedly")
         try:
             stream.stop()
@@ -613,7 +615,7 @@ class Output:
             elif ("error" in low or "failed" in low or "invalid" in low) and not last_err:
                 last_err = line[:200]
         proc.wait()
-        if not self.running:
+        if not self.running or lifecycle.ended_by_shutdown():
             return connected
         if connected:
             self._set("connecting", "connection lost; reconnecting")
@@ -650,7 +652,7 @@ class Output:
             if o["send_titles"] and time.monotonic() >= next_title_check:
                 next_title_check = time.monotonic() + 2
                 self._maybe_send_title()
-        if self.running and proc.poll() not in (None, 0):
+        if self.running and proc.poll() not in (None, 0) and not lifecycle.ended_by_shutdown():
             raise OutputError("encoder failed: " + (errs[-1] if errs else f"exit {proc.returncode}"))
         return True
 

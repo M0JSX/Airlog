@@ -188,7 +188,9 @@ set -e
 UNIT=/etc/systemd/system/airlog.service
 if [ "$1" = configure ]; then
   if [ -f "$UNIT" ]; then
-    # Upgrade: the unit already points at /opt/airlog; pick up the new build.
+    # Upgrade: the unit already points at /opt/airlog; pick up the new build. Units written by
+    # 1.6.4 and earlier lack KillMode=mixed (systemd then signals ffmpeg too on stop): add it.
+    grep -q '^KillMode=' "$UNIT" || sed -i 's/^Restart=always$/KillMode=mixed\nRestart=always/' "$UNIT"
     systemctl daemon-reload || true
     systemctl try-restart airlog.service || true
   elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
