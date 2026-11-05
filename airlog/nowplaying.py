@@ -29,6 +29,8 @@ MISSES_TO_END = 2      # consecutive checks without a match before the current s
 REJOIN_S = 150         # the same song matched again within this gap continues the old entry
 KEEP = 1000            # most tracks ever kept in tracks.json (the buffer length usually limits it first)
 SAVE_EVERY_S = 120     # how often "still playing" updates are written out
+SHOW_FAILING_AFTER = 3 # consecutive failed checks before the page says Shazam can't be reached
+TIMEOUT_S = 30         # longest a single check may take
 
 
 @dataclass
@@ -130,6 +132,34 @@ class TrackLog:
             return [asdict(t) for t in reversed(keep[-limit:])]
 
 
+def make_shazam(Shazam):
+    """A Shazam client that fails fast. shazamio's default retries a slow or rate-limited request up to
+    20 times with waits of up to a minute, which only ever surfaced here as a bare timeout. One quick
+    retry, then the real error. Returns (shazam, client we must close) - or the default if the
+    installed shazamio predates the hook."""
+    try:
+        from aiohttp_retry import ExponentialRetry
+        from shazamio import HTTPClient
+        client = HTTPClient(retry_options=ExponentialRetry(attempts=2, start_timeout=1.0, max_timeout=3.0,
+                                                           statuses={500, 502, 503, 504}))
+        return Shazam(http_client=client), client
+    except Exception:
+        return Shazam(), None
+
+
+def rate_limited(ex: Exception) -> bool:
+    return type(ex).__name__ == "RateLimited" or "429" in str(ex)
+
+
+def describe_failure(ex: Exception) -> str:
+    if isinstance(ex, (TimeoutError, asyncio.TimeoutError)):
+        return f"no answer from Shazam within {TIMEOUT_S} s"
+    if rate_limited(ex):
+        return "Shazam is rate-limiting this connection (HTTP 429); checking less often"
+    text = str(ex).strip()
+    return f"{type(ex).__name__}: {text}" if text else type(ex).__name__
+
+
 class Recognizer:
     """Background thread: samples the live audio and keeps the TrackLog up to date."""
 
@@ -153,7 +183,7 @@ class Recognizer:
             e.log(f"Song identification unavailable: {ex}")
             return
         loop = asyncio.new_event_loop()
-        shazam = Shazam()
+        shazam, client = make_shazam(Shazam)
         self.state = "listening"
         next_at = time.monotonic() + SAMPLE_S
         try:
@@ -169,6 +199,11 @@ class Recognizer:
                 next_at += delay
         finally:
             self.log.close(e.live_time() or time.time())
+            if client is not None:
+                try:
+                    loop.run_until_complete(client.close())
+                except Exception:
+                    pass
             loop.close()
 
     def _check(self, loop, shazam) -> float:
@@ -183,20 +218,31 @@ class Recognizer:
             self._no_match(t1)
             return 0
         wav = b"".join(e.iter_clip(t1, t2, "wav"))
-        res = loop.run_until_complete(asyncio.wait_for(shazam.recognize(wav), 30))
-        if self.failures:
-            e.log("Song identification is working again")
-        self.failures = 0
-        self.state = "listening"
+        res = loop.run_until_complete(asyncio.wait_for(shazam.recognize(wav), TIMEOUT_S))
+        self._ok()
         self._result(res or {}, t1, t2)
         return 0
 
+    def _ok(self) -> None:
+        if self.state == "failing":
+            self.engine.log("Song identification is working again")
+        self.failures = 0
+        self.state = "listening"
+
     def _failed(self, ex: Exception) -> float:
+        """A check that didn't get an answer. One or two in a row are normal (a slow or busy Shazam):
+        skip them quietly. From SHOW_FAILING_AFTER on, say so on the page and in the log, and back off."""
         self.failures += 1
+        if self.failures < SHOW_FAILING_AFTER:
+            return 0
         self.state = "failing"
-        if self.failures in (1, 5) or self.failures % 50 == 0:
-            self.engine.log(f"Song identification failed ({self.failures}x): {type(ex).__name__}: {ex}"[:300])
-        return min(600, self.interval * (self.failures - 1))   # back off while Shazam is unreachable
+        n = self.failures
+        if n == SHOW_FAILING_AFTER or n == 10 or n % 50 == 0:
+            self.engine.log(f"Song identification: {n} checks in a row failed; last: {describe_failure(ex)}"[:300])
+        backoff = self.interval * (n - SHOW_FAILING_AFTER + 1)
+        if rate_limited(ex):
+            backoff = max(backoff, 120)          # asked to slow down: do
+        return min(600, backoff)
 
     def _no_match(self, t1: float) -> None:
         self.misses += 1
