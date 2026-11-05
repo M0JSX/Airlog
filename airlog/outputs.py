@@ -602,6 +602,10 @@ class Output:
                 last_err = "wrong SRT passphrase (or the other end has none / a different one)"
             elif "connection timed out" in low or "connection setup failure" in low:
                 last_err = f"no answer from {o['host']}:{o['port']} (is the receiver listening, and the port open?)"
+            elif (kind == "srt" and o["mode"] == "caller" and "connection to srt://" in low and "failed" in low
+                  and not last_err):     # a more specific cause (e.g. wrong passphrase) wins
+                last_err = (f"nothing answered at {o['host']}:{o['port']} (SRT uses UDP). Is the receiver set to "
+                            f"Receive → SRT on port {o['port']}, and is UDP {o['port']} open in its firewall?")
             elif "connection refused" in low or "rejected" in low:
                 last_err = f"refused by {o['host']}:{o['port']}"
             elif "address already in use" in low:

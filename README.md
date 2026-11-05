@@ -294,8 +294,12 @@ sudo ufw allow 8000/tcp        # Linux, Icecast push on port 8000
 sudo firewall-cmd --permanent --add-port=9000/udp && sudo firewall-cmd --reload    # firewalld
 ```
 
-On Windows the installer allows any port Airlog.exe listens on (TCP and UDP) on
-private and domain networks. On macOS, allow incoming connections for Airlog if
+On Windows the installer allows Airlog.exe and its bundled ffmpeg.exe (which
+does the SRT, UDP and RTP listening) to accept connections on any port, TCP and
+UDP, on private and domain networks. The network has to be set to *Private* in
+Windows: rules for public networks aren't created. Upgrading from 1.6.2 or
+earlier: run the new installer (or `Airlog.exe --install-service`) to get the
+ffmpeg.exe rule; until then SRT/UDP/RTP senders get no answer. On macOS, allow incoming connections for Airlog if
 asked.
 
 **Outputs** (Settings → Outputs). Add as many as you like; each has its own
