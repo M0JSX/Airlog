@@ -213,7 +213,10 @@ turns the announcement off.
 - **Nudge** buttons move In or Out by ±0.1 s or ±1 s. You can also type exact
   times (`HH:MM:SS.s`, or `MM:SS` in the current hour).
 - **Preview (P)** plays the selection in the browser, with a playhead on the
-  waveform.
+  waveform. With only an In marked, it plays on past where live was, keeping up
+  with the recording; marking Out while it plays stops it there.
+- **Listen live (L)** plays what's being recorded, a second or two behind; the
+  playhead shows how far behind you are.
 - **Quick grab** buttons download the last 30 s, 1, 2, 5, 10 or 15 min
   immediately.
 - **Download** goes straight to your machine as WAV, MP3 or FLAC, ready to open

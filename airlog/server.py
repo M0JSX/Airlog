@@ -319,6 +319,20 @@ def create_app(holder: Holder) -> Flask:
         return Response(stream_with_context(e.iter_clip(t1, t2, fmt, bitrate)), mimetype=mime, headers=headers,
                         direct_passthrough=True)
 
+    @app.get("/api/listen")
+    def listen():
+        """MP3 from `from` (default: just behind live) onwards, following the recording as it grows."""
+        e = holder.engine
+        lo, hi = e.buffer_start(), e.live_time()
+        if not e.running or lo is None or hi is None:
+            return err("Nothing is being recorded", 416)
+        t1 = request.args.get("from", type=float)
+        t1 = hi - 0.5 if t1 is None else min(max(t1, lo), hi)
+        kbps = min(max(request.args.get("kbps", 128, type=int), 32), 320)
+        return Response(stream_with_context(e.iter_follow(t1, kbps)), mimetype="audio/mpeg",
+                        headers={"Cache-Control": "no-store", "X-Airlog-From": f"{t1:.3f}"},
+                        direct_passthrough=True)
+
     @app.post("/api/grab")
     def grab():
         """Save a clip into the server's grabs folder."""

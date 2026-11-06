@@ -837,6 +837,54 @@ class Engine:
                 p.kill()
             p.wait()
 
+    def iter_follow(self, t1: float, bitrate: int = 128):
+        """Yield MP3 from t1 onwards with no end: catches up through the buffer, then follows the live
+        recording as it grows (listening live, or previewing a selection that has no Out yet).
+        Ends when recording stops or the listener goes away."""
+        cfg = self.cfg
+        cmd = [cfg.ffmpeg_path, "-hide_banner", "-nostdin", "-loglevel", "error",
+               "-f", "s16le", "-ar", str(self.sr), "-ac", str(self.ch), "-i", "pipe:0",
+               *codec_args("mp3", bitrate), "-flush_packets", "1", "-f", "mp3", "pipe:1"]
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             creationflags=NO_WINDOW)
+        sr = self.sr
+
+        def feed():
+            pos = t1
+            idle_since = time.monotonic()
+            try:
+                while self._running and not lifecycle.SHUTTING_DOWN.is_set():
+                    lt = self.live_time()
+                    n = int(min((lt or pos) - pos, 1.0) * sr) if lt else 0
+                    if n < sr // 20:                       # less than 50 ms new: wait for more
+                        if time.monotonic() - idle_since > 60:
+                            break                          # nothing recorded for a minute
+                        time.sleep(0.05)
+                        continue
+                    idle_since = time.monotonic()
+                    end = pos + n / sr                     # advance by whole frames, so nothing repeats or skips
+                    for chunk in self.spool.iter_range(pos, end):
+                        p.stdin.write(chunk)
+                    pos = end
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+            finally:
+                try:
+                    p.stdin.close()
+                except OSError:
+                    pass
+        threading.Thread(target=feed, name="follow", daemon=True).start()
+        try:
+            while True:
+                data = p.stdout.read1(16384) if hasattr(p.stdout, "read1") else p.stdout.read(4096)
+                if not data:
+                    break
+                yield data
+        finally:
+            if p.poll() is None:
+                p.kill()
+            p.wait()
+
     def clip_name(self, t1: float, t2: float, fmt: str) -> str:
         return render_pattern(self.cfg.grab_pattern, t1, self.cfg.station_name) + f"_{(t2 - t1):.0f}s.{fmt}"
 
