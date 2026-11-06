@@ -133,6 +133,7 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
     <span class="grow"></span>
     <label><input type="checkbox" id="follow" checked> Follow live</label>
     <button class="small" id="livebtn">» Live</button>
+    <button class="small" id="listen" title="Listen to what's being recorded (L)">🔊 Listen live <kbd>L</kbd></button>
     <button class="small" id="zoomsel">Zoom to selection</button>
     <label>View <select id="span"></select></label>
   </div>
@@ -521,8 +522,12 @@ function drawWave(){
   // preview playhead
   const pv = $("prev");
   if (!pv.paused && pv.dataset.from){
-    const x = X(+pv.dataset.from + pv.currentTime);
+    const tp = previewPos(), x = X(tp);
     g.fillStyle = "#fff"; g.fillRect(x, 0, 2, wh);
+    if (pv.dataset.mode !== "clip" && hi != null){        // how far behind the recording you're hearing
+      g.font = "11px " + css("--mono"); g.textAlign = "right";
+      g.fillText(`▶ ${hms(tp)} · ${dur(Math.max(0, hi - tp))} behind`, x - 5, 30); g.textAlign = "left";
+    }
   }
 
   // live edge
@@ -629,16 +634,49 @@ function syncPlayButtons(){
 $("stopplay").onclick = stopPlayer;
 ["play", "pause", "ended"].forEach(ev => $("player").addEventListener(ev, syncPlayButtons));
 
+// One preview player, three modes: "clip" (In to Out), "follow" (In with no Out yet: plays on past
+// where live was when you pressed play, keeping up with the recording), "live" (listen live).
+function stopPreview(){
+  const pv = $("prev");
+  pv.pause(); pv.removeAttribute("src"); pv.load();       // drop the stream so the recorder stops sending it
+  delete pv.dataset.mode; delete pv.dataset.from;
+  syncPreview();
+}
+function startPreview(mode, from, url){
+  if ($("player").dataset.url) stopPlayer();
+  const pv = $("prev");
+  pv.src = url; pv.dataset.from = from; pv.dataset.mode = mode;
+  pv.play().then(syncPreview).catch(e => { msg((mode === "live" ? "Listening" : "Preview") + " failed: " + e.message, "bad"); stopPreview(); });
+}
+function previewPos(){ const pv = $("prev"); return pv.dataset.from ? +pv.dataset.from + pv.currentTime : null; }
+function syncPreview(){
+  const pv = $("prev"), on = !pv.paused && pv.dataset.mode;
+  $("preview").innerHTML = on && pv.dataset.mode !== "live" ? "■ Stop <kbd>P</kbd>" : "▶ Preview <kbd>P</kbd>";
+  $("listen").innerHTML = on && pv.dataset.mode === "live" ? "■ Stop listening <kbd>L</kbd>" : "🔊 Listen live <kbd>L</kbd>";
+  $("listen").classList.toggle("accent", on && pv.dataset.mode === "live");
+}
 function preview(){
   const pv = $("prev");
-  if (!pv.paused){ pv.pause(); $("preview").textContent = "▶ Preview"; return; }
-  if ($("player").dataset.url) stopPlayer();
+  if (!pv.paused && pv.dataset.mode && pv.dataset.mode !== "live") return stopPreview();
   const r = range(); if (!r) return;
-  pv.src = clipUrl(r[0], r[1], "mp3", "&kbps=128"); pv.dataset.from = r[0];
-  pv.play().then(() => $("preview").innerHTML = "■ Stop <kbd>P</kbd>").catch(e => msg("Preview failed: " + e.message, "bad"));
+  if (sel.b == null) startPreview("follow", r[0], `/api/listen?from=${r[0].toFixed(3)}`);
+  else startPreview("clip", r[0], clipUrl(r[0], r[1], "mp3", "&kbps=128"));
 }
-$("prev").addEventListener("ended", () => $("preview").innerHTML = "▶ Preview <kbd>P</kbd>");
-$("prev").addEventListener("pause", () => $("preview").innerHTML = "▶ Preview <kbd>P</kbd>");
+function listenLive(){
+  const pv = $("prev");
+  if (!pv.paused && pv.dataset.mode === "live") return stopPreview();
+  const lt = live(); if (lt == null || !st || st.status !== "recording") return msg("Nothing is being recorded right now.", "warn");
+  const from = lt - 0.5;
+  follow = true; $("follow").checked = true;
+  startPreview("live", from, `/api/listen?from=${from.toFixed(3)}`);
+}
+$("prev").addEventListener("ended", stopPreview);
+$("prev").addEventListener("pause", syncPreview);
+$("prev").addEventListener("timeupdate", () => {
+  // Previewing from In with no Out: if an Out gets marked while it plays, stop there.
+  const pv = $("prev"), t = previewPos();
+  if (pv.dataset.mode === "follow" && sel.b != null && t != null && t >= sel.b) stopPreview();
+});
 
 // ------------------------------------------------------------ canvas interaction
 const wave = $("wave");
@@ -786,7 +824,7 @@ document.addEventListener("click", async e => {
   if (play){
     const p = $("player");
     if (p.dataset.url === play.dataset.play && !p.paused) { stopPlayer(); return; }   // ■ on the playing row
-    if (!$("prev").paused) $("prev").pause();                                         // one thing at a time
+    if ($("prev").dataset.mode) stopPreview();                                        // one thing at a time
     p.dataset.url = play.dataset.play;
     p.src = play.dataset.play;
     $("playname").textContent = decodeURIComponent(play.dataset.play.split("/").pop());
@@ -1104,7 +1142,7 @@ $("zoomsel").onclick = () => {
 };
 $("markin").onclick = markIn; $("markout").onclick = markOut;
 $("clear").onclick = () => setSel(null, null);
-$("dl").onclick = grabSel; $("since").onclick = grabSince; $("save").onclick = saveOnServer; $("preview").onclick = preview;
+$("dl").onclick = grabSel; $("since").onclick = grabSince; $("save").onclick = saveOnServer; $("preview").onclick = preview; $("listen").onclick = listenLive;
 [[30,"30s"],[60,"1m"],[120,"2m"],[300,"5m"],[600,"10m"],[900,"15m"]].forEach(([s,l]) => {
   const b = document.createElement("button"); b.textContent = l; b.onclick = () => grabLast(s); $("quick").appendChild(b);
 });
@@ -1136,7 +1174,7 @@ document.addEventListener("keydown", e => {
   if ($("settings").classList.contains("on")) { if (e.key === "Escape") $("settings").classList.remove("on"); return; }
   const typing = ["INPUT","SELECT","TEXTAREA"].includes(document.activeElement.tagName);
   const k = e.key;
-  const fn = {F2:markIn, F3:markOut, F4:grabSel, F5:grabSince, Escape:() => setSel(null,null)}[k] || (!typing && (k === "p" || k === "P") ? preview : null);
+  const fn = {F2:markIn, F3:markOut, F4:grabSel, F5:grabSince, Escape:() => setSel(null,null)}[k] || (!typing && (k === "p" || k === "P") ? preview : !typing && (k === "l" || k === "L") ? listenLive : null);
   if (fn){ e.preventDefault(); fn(); }
 });
 window.addEventListener("resize", () => peakDirty = true);
