@@ -25,9 +25,11 @@ PREFIX=$ROOT/prefix
 SRC=$ROOT/src
 mkdir -p "$PREFIX" "$SRC" "$OUT"
 export MACOSX_DEPLOYMENT_TARGET=11.0
-export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig
+export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig PKG_CONFIG_LIBDIR=$PREFIX/lib/pkgconfig
 export CFLAGS="-O2 -I$PREFIX/include" LDFLAGS="-L$PREFIX/lib"
 JOBS=$(sysctl -n hw.ncpu)
+command -v pkg-config >/dev/null || brew install pkgconf
+command -v cmake >/dev/null || brew install cmake
 
 fetch() {   # dir name, url [mirror url...]: download (retrying, then mirrors) and unpack into $SRC/<dir>
   local dir=$1; shift
@@ -79,13 +81,13 @@ echo "Building openssl"
 
 echo "Building srt"
 (cd "$SRC/srt" && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-   -DCMAKE_INSTALL_LIBDIR=lib -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DENABLE_APPS=OFF \
+   -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DENABLE_APPS=OFF \
    -DUSE_ENCLIB=openssl -DOPENSSL_ROOT_DIR="$PREFIX" -DOPENSSL_USE_STATIC_LIBS=ON >/dev/null \
    && cmake --build build -j"$JOBS" >/dev/null && cmake --install build >/dev/null)
 
 echo "Building SDL2"
 (cd "$SRC/sdl" && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-   -DCMAKE_INSTALL_LIBDIR=lib -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF >/dev/null \
+   -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF >/dev/null \
    && cmake --build build -j"$JOBS" >/dev/null && cmake --install build >/dev/null)
 
 echo "Building ffmpeg $FFMPEG_V (LGPL)"
@@ -93,7 +95,7 @@ cd "$SRC/ffmpeg"
 ./configure --prefix="$PREFIX" --pkg-config-flags=--static \
   --extra-cflags="-I$PREFIX/include" --extra-ldflags="-L$PREFIX/lib" --extra-libs="-lc++" \
   --disable-shared --enable-static --enable-version3 \
-  --disable-doc --disable-debug --disable-xlib --disable-libxcb --disable-sndio \
+  --disable-doc --disable-debug --disable-xlib --disable-libxcb --disable-sndio --disable-lzma \
   --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libsrt --enable-openssl --enable-sdl2 \
   > "$ROOT/configure.log" || { tail -40 ffbuild/config.log; exit 1; }
 grep -q "^License: LGPL version 3 or later" "$ROOT/configure.log" \
