@@ -419,6 +419,35 @@ def create_app(holder: Holder) -> Flask:
             return err("action must be start or stop")
         return jsonify(ok=True)
 
+    @app.post("/api/outputs/<oid>")
+    def output_switch(oid: str):
+        """Turn one output on or off from the main page: saved to the config, applied straight away,
+        and the recording isn't restarted."""
+        if not can_admin():
+            return err(ADMIN_REFUSED, 403)
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body.get("enabled"), bool):
+            return err("enabled must be true or false")
+        on = body["enabled"]
+        with holder.lock:                            # not while Settings is restarting the recorder
+            cfg = holder.cfg
+            specs = copy.deepcopy(cfg.outputs or [])
+            spec = next((o for o in specs if o.get("id") == oid), None)
+            if spec is None:
+                return err("no such output", 404)
+            spec["enabled"] = on
+            try:
+                specs = outputs.normalize_outputs(specs, previous=cfg.outputs)
+            except ValueError as ex:                 # e.g. switching on an output that has no address yet
+                return err(str(ex))
+            cfg.outputs = specs
+            cfg.save(holder.cfg_path)
+            try:
+                holder.engine.outputs.set_enabled(oid, on)
+            except KeyError:                         # the running set predates it: next restart picks it up
+                pass
+        return jsonify(ok=True, enabled=on)
+
     @app.get("/api/config")
     def get_config():
         d = asdict(holder.cfg)
@@ -428,7 +457,7 @@ def create_app(holder: Holder) -> Flask:
         out["outputs"] = outputs.mask_outputs(d["outputs"])
         kinds = {k: {"label": outputs.KIND_LABELS[k], "codecs": outputs.CODECS[k], "port": outputs.DEFAULT_PORT[k]}
                  for k in outputs.KINDS}
-        return jsonify(config=out, can_edit=can_admin(), output_kinds=kinds, backends=sources.BACKENDS, default_backend=sources.default_backend(),
+        return jsonify(config=out, can_edit=can_admin(), output_kinds=kinds, bitrates=outputs.BITRATES, backends=sources.BACKENDS, default_backend=sources.default_backend(),
                        ffmpeg=sources.ffmpeg_version(holder.cfg.ffmpeg_path))
 
     @app.post("/api/config")

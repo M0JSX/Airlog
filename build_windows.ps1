@@ -10,7 +10,8 @@
 #>
 param(
     [string]$FFmpegZip = "",
-    [string]$FFmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    # LGPL build: Airlog uses no GPL parts. packaging\check_ffmpeg.py fails the build if this changes.
+    [string]$FFmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip",
     [switch]$NoInstaller
 )
 $ErrorActionPreference = "Stop"
@@ -50,14 +51,10 @@ if (-not (Test-Path "$ffdir\bin\ffmpeg.exe")) {
     New-Item -ItemType Directory -Force -Path ".build" | Out-Null
     if (-not $FFmpegZip) {
         $FFmpegZip = ".build\ffmpeg.zip"
-        $fallback = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-        try {
-            Write-Host "Downloading $FFmpegUrl"
-            Invoke-WebRequest -Uri $FFmpegUrl -OutFile $FFmpegZip -UseBasicParsing
-        } catch {
-            Write-Host "  failed ($($_.Exception.Message)); trying $fallback"
-            $FFmpegUrl = $fallback
-            Invoke-WebRequest -Uri $FFmpegUrl -OutFile $FFmpegZip -UseBasicParsing
+        Write-Host "Downloading $FFmpegUrl"
+        for ($try = 1; ; $try++) {
+            try { Invoke-WebRequest -Uri $FFmpegUrl -OutFile $FFmpegZip -UseBasicParsing; break }
+            catch { if ($try -ge 3) { throw }; Write-Host "  failed ($($_.Exception.Message)); retrying"; Start-Sleep 10 }
         }
     }
     $tmp = ".build\ffmpeg_extract"
@@ -71,7 +68,7 @@ if (-not (Test-Path "$ffdir\bin\ffmpeg.exe")) {
     Remove-Item -Recurse -Force $tmp
 }
 foreach ($f in "ffmpeg.exe", "ffprobe.exe", "ffplay.exe") {
-    if (-not (Test-Path "$ffdir\bin\$f")) { throw "$f missing from the ffmpeg build (use a 'full' or 'essentials' build)" }
+    if (-not (Test-Path "$ffdir\bin\$f")) { throw "$f missing from the ffmpeg build" }
 }
 & "$ffdir\bin\ffmpeg.exe" -hide_banner -version | Select-Object -First 1
 
@@ -85,10 +82,8 @@ Copy-Item "$ffdir\bin\ffmpeg.exe", "$ffdir\bin\ffprobe.exe", "$ffdir\bin\ffplay.
 New-Item -ItemType Directory -Force -Path "dist\Airlog\licenses" | Out-Null
 $lic = Get-ChildItem -Path $ffdir -Filter "LICENSE*" -File | Select-Object -First 1
 if ($lic) { Copy-Item $lic.FullName "dist\Airlog\licenses\ffmpeg-LICENSE.txt" }
-@"
-Airlog bundles FFmpeg (https://ffmpeg.org) from $FFmpegUrl
-FFmpeg is licensed under the GNU GPL v3 (this build). Source: https://ffmpeg.org/download.html
-"@ | Set-Content "dist\Airlog\licenses\ffmpeg-NOTICE.txt"
+& $vpy packaging\check_ffmpeg.py "$ffdir\bin\ffmpeg.exe" windows "$FFmpegUrl (https://github.com/BtbN/FFmpeg-Builds)" "dist\Airlog\licenses\ffmpeg-NOTICE.txt"
+if ($LASTEXITCODE) { throw "the bundled ffmpeg failed its check" }
 Copy-Item README.md "dist\Airlog\README.md"
 
 # ---------------------------------------------------------------- self-test the exe

@@ -5,6 +5,8 @@ clock into clock-aligned files, keeps a rolling buffer you can grab clips from
 seconds after they air, and can take the station in from almost anywhere and
 send it on, processed, to wherever it needs to go.
 
+![Airlog's browser UI: the live waveform with songs marked, a song selected, and the outputs connected](docs/screenshots/timeline.png)
+
 **Record and grab**
 - **Hourly archive:** sample-accurate files split on the clock (60, 30 or 15
   minutes), in MP3, FLAC, WAV or Ogg, and deleted after a set number of days if
@@ -153,7 +155,9 @@ In **Settings** choose **Sound card input**, press **Refresh** and pick the devi
 - **Linux:** driver **alsa** (the service can't reach a desktop PulseAudio/PipeWire
   session). Pick a `plughw:X,Y` entry: `plughw` lets ALSA convert to 48 kHz
   stereo if the interface runs at another rate. Set the record level with
-  `alsamixer`.
+  `alsamixer`. The FFmpeg bundled on Linux can't read ALSA itself, so Airlog
+  reads the card through PortAudio (`libportaudio2`, which the `.deb` installs;
+  for the tarball, `sudo apt install libportaudio2`) and passes the audio on.
 - **macOS:** driver **avfoundation**.
 - **Windows:** driver **dshow**.
 
@@ -200,6 +204,8 @@ turns the announcement off.
 
 ## Using the browser UI
 
+![Listening live: the playhead follows the recording, a couple of seconds behind](docs/screenshots/listen-live.png)
+
 - **Waveform:** shows from 1 minute up to the length of the grab buffer (at most
   2 hours), following live. You can't scroll back past the oldest audio still in
   the buffer, since that's as far back as you can grab.
@@ -223,6 +229,12 @@ turns the announcement off.
   in Audition. **Save on recorder** stores the clip in the recorder's grabs folder
   instead, listed under *Saved grabs*.
 - **Hourly archive** lists the finished hourly files to play or download.
+
+  ![The Hourly archive tab](docs/screenshots/archive.png)
+- **Output switches:** each output listed under the station name has an on/off
+  switch. It takes effect straight away and is saved, and the recording isn't
+  interrupted: use it to take a stream down without stopping the logger. It
+  needs the same permission as Start/Stop.
 - **Settings** edits everything (source, formats, folders, buffer, password).
   Saving restarts the recorder, and the gap of a second or two is filled with
   silence.
@@ -279,6 +291,8 @@ WireGuard) or nginx with HTTPS. Don't port-forward it.
 Airlog can be the far end of a link (**Receive a stream**) and an encoder
 (**Outputs**), so it can log an STL feed, feed your listener stream, or link a
 studio Airlog to one at the transmitter site.
+
+![Settings: an Icecast output with song titles and multiband processing](docs/screenshots/settings-outputs.png)
 
 **Receive a stream** (Settings → Source → *Receive a stream*). Senders connect
 to the recorder:
@@ -460,8 +474,11 @@ On any Windows 10/11 PC with Python 3.10+ (`winget install Python.Python.3.12`),
 double-click **`build_windows.bat`** (or run `.\build_windows.ps1`). It:
 
 1. creates a private build environment and installs PyInstaller;
-2. downloads ffmpeg (gyan.dev "essentials", falling back to BtbN) and bundles
-   `ffmpeg.exe`, `ffprobe.exe` and `ffplay.exe`, so the PC needs nothing else;
+2. downloads an **LGPL** ffmpeg (BtbN's `win64-lgpl` build) and bundles
+   `ffmpeg.exe`, `ffprobe.exe` and `ffplay.exe`, so the PC needs nothing else.
+   `packaging/check_ffmpeg.py` checks it's LGPL and has every codec, protocol and
+   filter Airlog uses, and writes `licenses/ffmpeg-NOTICE.txt` with the exact
+   version and where its source is;
 3. builds `dist\Airlog\Airlog.exe` with the Airlog icon and version info;
 4. **self-tests the exe** (`Airlog.exe --selftest`): Tk, the bundled ffmpeg,
    and a real 4-second capture, archive file and grab;
@@ -484,9 +501,12 @@ On the machine type you're building for (the build is for its own CPU), run
 `dpkg-dev` for the .deb). It:
 
 1. creates a private build environment and installs PyInstaller;
-2. downloads a static ffmpeg (Linux: BtbN, falling back to Martin Riedl's
-   builds; macOS: Martin Riedl's builds) and bundles it, or uses
-   `FFMPEG_DIR=/path/to/static/ffmpeg ./build_unix.sh`;
+2. gets a static **LGPL** ffmpeg and bundles it. On Linux that's BtbN's
+   `-lgpl` build. On macOS every prebuilt download is a GPL build, so
+   `packaging/build_ffmpeg_macos.sh` builds one from source with only what
+   Airlog uses (about 10 minutes the first time; CI caches it). Or use your own:
+   `FFMPEG_DIR=/path/to/static/ffmpeg ./build_unix.sh`. Either way
+   `packaging/check_ffmpeg.py` checks it as on Windows;
 3. builds `dist/Airlog/Airlog` (Linux) or `dist/Airlog.app` (macOS);
 4. **self-tests the build** the same way as the Windows exe;
 5. writes `dist/Airlog-<version>-linux-<arch>.tar.gz` and

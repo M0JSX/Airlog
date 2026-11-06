@@ -1,2 +1,2 @@
 """Airlog - radio station logger with hourly archive files and instant grabs."""
-__version__ = "1.6.7"
+__version__ = "1.6.8"

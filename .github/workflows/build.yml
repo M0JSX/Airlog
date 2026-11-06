@@ -79,13 +79,21 @@ jobs:
           if-no-files-found: error
 
   macos:
-    runs-on: macos-latest   # Apple Silicon
+    # Apple Silicon. Set the repo variable MAC_RUNNER to a self-hosted runner's label (e.g. airlog-mac)
+    # to build on your own Mac instead of waiting for GitHub's; delete the variable to switch back.
+    runs-on: ${{ vars.MAC_RUNNER || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+
+      # The LGPL FFmpeg is built from source on macOS (prebuilt ones are GPL): reuse it until the script changes.
+      - uses: actions/cache@v4
+        with:
+          path: .build/ffmpeg-macos-arm64
+          key: ffmpeg-lgpl-macos-arm64-${{ hashFiles('packaging/build_ffmpeg_macos.sh') }}
 
       - name: Build, self-test and package
         run: ./build_unix.sh
