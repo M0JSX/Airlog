@@ -5,6 +5,8 @@ clock into clock-aligned files, keeps a rolling buffer you can grab clips from
 seconds after they air, and can take the station in from almost anywhere and
 send it on, processed, to wherever it needs to go.
 
+![Airlog's browser UI: the live waveform with songs marked, a song selected, and the outputs connected](docs/screenshots/timeline.png)
+
 **Record and grab**
 - **Hourly archive:** sample-accurate files split on the clock (60, 30 or 15
   minutes), in MP3, FLAC, WAV or Ogg, and deleted after a set number of days if
@@ -200,6 +202,8 @@ turns the announcement off.
 
 ## Using the browser UI
 
+![Listening live: the playhead follows the recording, a couple of seconds behind](docs/screenshots/listen-live.png)
+
 - **Waveform:** shows from 1 minute up to the length of the grab buffer (at most
   2 hours), following live. You can't scroll back past the oldest audio still in
   the buffer, since that's as far back as you can grab.
@@ -223,6 +227,8 @@ turns the announcement off.
   in Audition. **Save on recorder** stores the clip in the recorder's grabs folder
   instead, listed under *Saved grabs*.
 - **Hourly archive** lists the finished hourly files to play or download.
+
+  ![The Hourly archive tab](docs/screenshots/archive.png)
 - **Settings** edits everything (source, formats, folders, buffer, password).
   Saving restarts the recorder, and the gap of a second or two is filled with
   silence.
@@ -279,6 +285,8 @@ WireGuard) or nginx with HTTPS. Don't port-forward it.
 Airlog can be the far end of a link (**Receive a stream**) and an encoder
 (**Outputs**), so it can log an STL feed, feed your listener stream, or link a
 studio Airlog to one at the transmitter site.
+
+![Settings: an Icecast output with song titles and multiband processing](docs/screenshots/settings-outputs.png)
 
 **Receive a stream** (Settings → Source → *Receive a stream*). Senders connect
 to the recorder:
