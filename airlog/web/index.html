@@ -893,7 +893,7 @@ const FIELDS = [
   ["archive_dir","Folder","text"],
   ["archive_pattern","File name","text",null,"strftime codes + {station}; / makes sub-folders; time = file start"],
   ["archive_format","Format","select",[["mp3","MP3"],["flac","FLAC"],["wav","WAV"],["ogg","Ogg Vorbis"]]],
-  ["archive_bitrate_kbps","Bitrate (kbps)","number",null,"MP3 / Ogg only"],
+  ["archive_bitrate_kbps","Bitrate (kbps)","kbps","mp3","MP3 / Ogg only"],
   ["split_minutes","Split every","select",[[60,"60 min (on the hour)"],[30,"30 min"],[15,"15 min"]]],
   ["archive_keep_days","Delete after (days)","number",null,"0 = keep forever"],
   ["Grabs"],
@@ -930,7 +930,7 @@ const OUT_FIELDS = [
   ["passphrase","SRT passphrase","password","srt","Optional, 10–79 characters; the receiver must use the same"],
   ["latency_ms","SRT latency (ms)","number","srt","200 on a LAN; 1000–2000 over the internet"],
   ["codec","Codec","codec","icecast shoutcast srt udp rtp",""],
-  ["bitrate_kbps","Bitrate (kbps)","number","icecast shoutcast srt udp rtp","Not used for PCM"],
+  ["bitrate_kbps","Bitrate (kbps)","bitrate","icecast shoutcast srt udp rtp",""],
   ["stream_name","Stream name","text","icecast shoutcast","Blank = station name"],
   ["genre","Genre","text","icecast shoutcast",""],
   ["description","Description","text","icecast",""],
@@ -951,6 +951,15 @@ const OUT_FIELDS = [
   ["mb_presence_db","Presence trim (dB)","number","icecast shoutcast srt udp rtp device","800 Hz–4 kHz: voices","mb"],
   ["mb_air_db","Air trim (dB)","number","icecast shoutcast srt udp rtp device","Above 4 kHz","mb"],
 ];
+// Bitrate dropdown: the common values for a codec. MP3/MP2 only have fixed rates, so an old typed-in value
+// shows as the nearest real one (what the recorder actually uses); other codecs keep an unusual value as is.
+function bitrateOptions(codec, v){
+  const list = ((cfgCache && cfgCache.bitrates) || {})[codec] || [64, 96, 128, 192, 256, 320];
+  v = Math.round(+v || 128);
+  if (codec === "mp3" || codec === "mp2") v = list.reduce((a, b) => Math.abs(b - v) < Math.abs(a - v) ? b : a);
+  const all = list.includes(v) ? list : [...list, v].sort((a, b) => a - b);
+  return all.map(b => `<option value="${b}" ${b === v ? "selected" : ""}>${b}${list.includes(b) ? "" : " (custom)"}</option>`).join("");
+}
 const CODEC_LABELS = {mp3:"MP3", aac:"AAC", ogg:"Ogg Vorbis", opus:"Opus", mp2:"MPEG-1 Layer II (mp2)", pcm:"PCM (uncompressed)"};
 let outKinds = {}, outList = [];
 function renderOutputEditor(r){
@@ -990,12 +999,14 @@ function drawOutCards(){
       if (when === "custom" && proc !== "custom") return false;
       if (when === "mb" && !proc.startsWith("mb_")) return false;
       if (o.kind === "device" && (k === "codec" || k === "bitrate_kbps" || k === "port")) return false;
+      if (k === "bitrate_kbps" && o.codec === "pcm") return false;
       return ks.includes(o.kind);
     }).map(([k, label, type, , hint]) => {
       const v = o[k] ?? "";
       let input;
       if (type === "bool") input = `<input type="checkbox" data-k="${k}" ${v ? "checked" : ""}>`;
       else if (type === "codec") input = `<select data-k="${k}">` + kind.codecs.map(c => `<option value="${c}" ${c === v ? "selected" : ""}>${CODEC_LABELS[c] || c}</option>`).join("") + `</select>`;
+      else if (type === "bitrate") input = `<select data-k="${k}">${bitrateOptions(o.codec, v)}</select>`;
       else if (type.startsWith("select:")) input = `<select data-k="${k}">` + type.slice(7).split(",").map(x => { const [val, l] = x.split("="); return `<option value="${val}" ${val === v ? "selected" : ""}>${esc(l)}</option>`; }).join("") + `</select>`;
       else if (type === "outdevice") input = `<div style="display:flex;gap:6px"><select data-k="${k}" style="flex:1">` +
         `<option value="${esc(String(v))}">${esc(v ? String(v).replace(" | ", " — ") : "System default output")}</option></select>` +
@@ -1012,7 +1023,7 @@ function drawOutCards(){
         <button class="small" data-del="${i}" title="Remove this output">✕</button></div>${state}${rows}${sdp}</div>`;
   }).join("") || `<div class="dim" style="font-size:13px;margin:8px 0">No outputs.</div>`;
   box.querySelectorAll("[data-del]").forEach(b => b.onclick = e => { e.preventDefault(); collectOutputs(); outList.splice(+b.dataset.del, 1); drawOutCards(); });
-  box.querySelectorAll('select[data-k="mode"], select[data-k="processing"]').forEach(sel => sel.onchange = () => { collectOutputs(); drawOutCards(); });
+  box.querySelectorAll('select[data-k="mode"], select[data-k="processing"], select[data-k="codec"]').forEach(sel => sel.onchange = () => { collectOutputs(); drawOutCards(); });
   box.querySelectorAll("[data-outdevrefresh]").forEach(b => b.onclick = async e => {
     e.preventDefault();
     const sel = b.parentElement.querySelector("select"), cur = sel.value;
@@ -1049,6 +1060,8 @@ async function openSettings(){
       input = `<select id="f_${k}">` + o.map(([val, l]) => `<option value="${val}" ${String(val) === String(v || ((k==="device_backend" || k==="backup_device_backend")?r.default_backend:"")) ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
     } else if (type === "device"){
       input = `<div style="display:flex;gap:6px"><input type="text" list="devlist" id="f_${k}" value="${esc(String(v ?? ""))}" style="flex:1"><button class="small" id="devrefresh">Refresh</button></div><datalist id="devlist"></datalist>`;
+    } else if (type === "kbps"){
+      input = `<select id="f_${k}">${bitrateOptions(opts, v)}</select>`;
     } else if (type === "textarea"){
       input = `<textarea id="f_${k}" spellcheck="false">${esc(String(v ?? ""))}</textarea>`;
     } else input = `<input type="${type === "number" ? "number" : type}" step="any" id="f_${k}" value="${esc(String(v ?? ""))}">`;

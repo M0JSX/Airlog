@@ -79,7 +79,8 @@ def unique_path(p: Path) -> Path:
 def codec_args(fmt: str, bitrate: int) -> list[str]:
     fmt = fmt.lower()
     if fmt == "mp3":
-        return ["-c:a", "libmp3lame", "-b:a", f"{bitrate}k"]
+        from .outputs import snap_bitrate          # MP3 has fixed bitrates: use the nearest real one
+        return ["-c:a", "libmp3lame", "-b:a", f"{snap_bitrate('mp3', bitrate)}k"]
     if fmt == "flac":
         return ["-c:a", "flac"]
     if fmt == "ogg":

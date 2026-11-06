@@ -188,6 +188,7 @@ class FakeServer:
         self.handler = handler
         self.requests: list[bytes] = []
         self.audio = 0
+        self.first = b""                      # the first bytes of audio received
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _loop(self):
@@ -215,6 +216,8 @@ class FakeServer:
                 got = c.recv(65536)
                 if not got:
                     return
+                if len(self.first) < 4096:
+                    self.first += got[:4096 - len(self.first)]
                 self.audio += len(got)
         except OSError:
             return
@@ -294,11 +297,18 @@ except OSError:
     have_base = False
 a = engine("A_shout", source_type="custom", custom_input_args=TONE, outputs=outputs.normalize_outputs(
     [{"kind": "shoutcast", "host": "127.0.0.1", "port": base, "password": "sc-pass", "codec": "mp3",
-      "send_titles": False}]))
+      "bitrate_kbps": 100, "send_titles": False}]))
+assert a.cfg.outputs[0]["bitrate_kbps"] == 96, "MP3 has no 100 kbps: should snap to 96"
 a.start()
 assert wait(lambda: data_srv.audio > 20_000, 15), (data_srv.audio, a.outputs.status())
 assert any(b"icy-name:A_shout" in r for r in data_srv.requests), data_srv.requests
-print(f"   OK ({data_srv.audio // 1024} KB sent)")
+assert any(b"icy-br:96" in r for r in data_srv.requests), data_srv.requests
+f = data_srv.first
+assert f[0] == 0xFF and f[1] & 0xE0 == 0xE0, f"stream doesn't start on an MP3 frame: {f[:16]!r}"
+assert b"ID3" not in f[:10] and b"Xing" not in f and b"Info" not in f[:600] and b"LAME" not in f[:600], f[:64]
+# 96 kbps really: frame header bitrate index for MPEG-1 Layer III 96 kbps is 7
+assert (f[2] >> 4) == 7, f"first frame isn't 96 kbps (index {f[2] >> 4})"
+print(f"   OK ({data_srv.audio // 1024} KB sent; starts on a 96 kbps MP3 frame, no ID3/Xing)")
 a.stop()
 a = engine("A_shoutpw", source_type="custom", custom_input_args=TONE, outputs=outputs.normalize_outputs(
     [{"kind": "shoutcast", "host": "127.0.0.1", "port": base, "password": "nope"}]))
@@ -306,6 +316,30 @@ a.start()
 assert wait(lambda: a.outputs.status()[0]["state"] == "error", 10)
 assert "password" in a.outputs.status()[0]["detail"]
 a.stop(); data_srv.close()
+
+
+def kicks_source(srv, c):
+    """Like DNAS rejecting a stream: accept the source, then complain and close after a second."""
+    srv.requests.append(c.recv(1024))
+    c.sendall(b"OK2\r\nicy-caps:11\r\n\r\n")
+    srv.head(c)
+    time.sleep(1)
+    c.sendall(b"Bitrate of stream does not match the configured maxbitrate\r\n")
+    c.shutdown(socket.SHUT_WR)
+    time.sleep(0.5)
+    c.close()
+
+
+print("-- shoutcast drops the source: the log says when and why")
+kick = FakeServer(kicks_source)
+a = engine("A_kick", source_type="custom", custom_input_args=TONE, outputs=outputs.normalize_outputs(
+    [{"kind": "shoutcast", "host": "127.0.0.1", "port": kick.port - 1, "password": "sc-pass", "send_titles": False}]))
+a.start()
+assert wait(lambda: any("after 0m0" in line for line in map(str, a.logs)), 20), list(a.logs)[-6:]
+line = next(str(x) for x in a.logs if "after 0m0" in str(x))
+assert "Bitrate of stream" in line or "soon after connecting" in line, line
+print("   OK:", line[line.index("Shoutcast") if "Shoutcast" in line else 0:][:200])
+a.stop(); kick.close()
 
 # ---------------------------------------------------------------- an output that can't keep up
 print("-- a stalled output never holds up recording")

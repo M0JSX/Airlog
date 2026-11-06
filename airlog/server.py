@@ -428,7 +428,7 @@ def create_app(holder: Holder) -> Flask:
         out["outputs"] = outputs.mask_outputs(d["outputs"])
         kinds = {k: {"label": outputs.KIND_LABELS[k], "codecs": outputs.CODECS[k], "port": outputs.DEFAULT_PORT[k]}
                  for k in outputs.KINDS}
-        return jsonify(config=out, can_edit=can_admin(), output_kinds=kinds, backends=sources.BACKENDS, default_backend=sources.default_backend(),
+        return jsonify(config=out, can_edit=can_admin(), output_kinds=kinds, bitrates=outputs.BITRATES, backends=sources.BACKENDS, default_backend=sources.default_backend(),
                        ffmpeg=sources.ffmpeg_version(holder.cfg.ffmpeg_path))
 
     @app.post("/api/config")

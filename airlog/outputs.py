@@ -49,6 +49,28 @@ CODECS = {
 DEFAULT_PORT = {"icecast": 8000, "shoutcast": 8000, "srt": 9000, "udp": 5004, "rtp": 5004, "device": 0}
 DEVICE_BACKLOG_BLOCKS = 3    # sound card: never let more than ~0.3 s pile up ahead of the card (keeps latency fixed)
 BITRATE_RANGE = {"mp3": (32, 320), "aac": (32, 512), "ogg": (48, 500), "opus": (16, 510), "mp2": (32, 384)}
+# What the bitrate dropdown offers. MP3 and MP2 can only be these values (the frame format has no others):
+# anything else is snapped to the nearest, so icy-br / Ice-Audio-Info match what's actually sent.
+BITRATES = {
+    "mp3": [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+    "mp2": [32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+    "aac": [24, 32, 48, 64, 96, 128, 160, 192, 256, 320],
+    "ogg": [64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+    "opus": [24, 32, 48, 64, 96, 128, 160, 192, 256],
+}
+FIXED_BITRATES = ("mp3", "mp2")
+
+
+def snap_bitrate(codec: str, kbps) -> int:
+    """A valid bitrate for codec: MP3/MP2 to the nearest allowed value, others clamped to their range."""
+    try:
+        kbps = int(float(kbps))
+    except (TypeError, ValueError):
+        kbps = 128
+    if codec in FIXED_BITRATES:
+        return min(BITRATES[codec], key=lambda b: (abs(b - kbps), b))
+    lo, hi = BITRATE_RANGE.get(codec, (0, 10_000))
+    return max(lo, min(hi, kbps))
 DEFAULTS = {
     "id": "", "name": "", "enabled": True, "kind": "icecast", "codec": "mp3", "bitrate_kbps": 128,
     "host": "", "port": 8000, "tls": False,
@@ -153,9 +175,8 @@ def normalize_outputs(raw, previous: list | None = None) -> list[dict]:
             o["buffer_ms"] = max(20, min(2000, o["buffer_ms"]))
         elif not 1 <= o["port"] <= 65535:
             raise ValueError(f"{label}: port must be 1–65535")
-        lo, hi = BITRATE_RANGE.get(o["codec"], (0, 10_000))
         if o["codec"] in BITRATE_RANGE:
-            o["bitrate_kbps"] = max(lo, min(hi, o["bitrate_kbps"]))
+            o["bitrate_kbps"] = snap_bitrate(o["codec"], o["bitrate_kbps"])
         listener = (o["kind"] == "srt" and o["mode"] == "listener") or o["kind"] == "device"
         if o["enabled"] and not o["host"] and not listener:
             raise ValueError(f"{label}: enter the server or receiver address")
@@ -291,6 +312,14 @@ def codec_args(o: dict, sr: int, ch: int) -> tuple[list[str], str]:
             return ["-c:a", "pcm_s16be"], ""                                      # L16
         return ["-c:a", "s302m", "-strict", "-2", "-ar", "48000", "-ac", str(max(2, ch))], ""  # SMPTE 302M in TS
     raise ValueError(f"unsupported codec {c}")
+
+
+def stream_mux_args(o: dict) -> list[str]:
+    """MP3 straight to a server: no ID3v2 tag and no Xing/LAME header frame at the start. Those are for
+    files; on a stream they're bytes that aren't audio frames, which Shoutcast in particular can reject."""
+    if container(o) == "mp3":
+        return ["-id3v2_version", "0", "-write_xing", "0"]
+    return []
 
 
 def container(o: dict) -> str:
@@ -432,7 +461,7 @@ class Output:
         af = process_filter(self.o)
         cmd = [cfg.ffmpeg_path, "-hide_banner", "-nostdin", "-nostats", "-loglevel", loglevel,
                "-f", "s16le", "-ar", str(self.engine.sr), "-ac", str(self.engine.ch), "-i", "pipe:0",
-               *(["-af", af] if af else []), *args, "-f", container(self.o), *target]
+               *(["-af", af] if af else []), *args, *stream_mux_args(self.o), "-f", container(self.o), *target]
         try:
             return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     creationflags=NO_WINDOW)
@@ -636,6 +665,7 @@ class Output:
         self._set("connected", describe(o))
         self._title_sent = None
         sock.settimeout(20)
+        started = time.monotonic()
         next_title_check = 0.0
         out = proc.stdout
         while self.running:
@@ -647,7 +677,7 @@ class Output:
             except (OSError, socket.timeout) as e:
                 if not self.running:
                     break
-                raise OutputError(f"connection to the server dropped ({type(e).__name__})") from None
+                raise OutputError(_drop_reason(sock, e, time.monotonic() - started)) from None
             self.sent += len(chunk)
             if o["send_titles"] and time.monotonic() >= next_title_check:
                 next_title_check = time.monotonic() + 2
@@ -668,6 +698,29 @@ class Output:
 
 
 # ---------------------------------------------------------------- server protocols
+def _drop_reason(sock: socket.socket, e: BaseException, secs: float) -> str:
+    """Why a stream server connection ended: how long it lasted, plus anything the server said before
+    closing (Shoutcast and Icecast sometimes send a line of text, e.g. a bitrate or format complaint)."""
+    said = ""
+    try:
+        sock.settimeout(0.5)
+        said = sock.recv(512).decode(errors="replace").strip().replace("\r", " ").replace("\n", " ")
+    except (OSError, socket.timeout, ValueError):
+        pass
+    kind = {"BrokenPipeError": "the server closed the connection", "ConnectionResetError": "the server reset the connection",
+            # Windows 10053: the server had already closed it (usually: the server dropped the source)
+            "ConnectionAbortedError": "the server ended the connection",
+            "timeout": "the server stopped accepting audio for 20 s", "TimeoutError": "the server stopped accepting audio for 20 s"
+            }.get(type(e).__name__, f"connection lost ({type(e).__name__})")
+    m, sec = divmod(int(secs), 60)
+    msg = f"{kind} after {m}m{sec:02d}s"
+    if said:
+        msg += f'; it said: "{said[:160]}"'
+    elif secs < 15:
+        msg += " (dropped soon after connecting: often the server rejecting the stream format or bitrate)"
+    return msg
+
+
 def _open(o: dict, port: int, timeout: float = 10) -> socket.socket:
     try:
         s = socket.create_connection((o["host"], port), timeout=timeout)

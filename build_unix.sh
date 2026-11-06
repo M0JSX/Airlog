@@ -29,8 +29,8 @@ step() { printf '\n\033[33m==> %s\033[0m\n' "$*"; }
 VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' airlog/__init__.py)
 OS=$(uname -s)
 case "$(uname -m)" in
-  x86_64|amd64)  ARCH=x86_64; MR_ARCH=amd64; BTBN=linux64;      DEB_ARCH=amd64 ;;
-  aarch64|arm64) ARCH=arm64;  MR_ARCH=arm64; BTBN=linuxarm64;   DEB_ARCH=arm64 ;;
+  x86_64|amd64)  ARCH=x86_64; BTBN=linux64;    DEB_ARCH=amd64 ;;
+  aarch64|arm64) ARCH=arm64;  BTBN=linuxarm64; DEB_ARCH=arm64 ;;
   *) echo "Unsupported CPU $(uname -m)"; exit 1 ;;
 esac
 case "$OS" in
@@ -64,30 +64,21 @@ if [[ -n "${FFMPEG_DIR:-}" ]]; then
   for t in ffmpeg ffprobe ffplay; do [[ -x "$FFMPEG_DIR/$t" ]] && cp "$FFMPEG_DIR/$t" "$FFDIR/"; done
   FF_SOURCE="$FFMPEG_DIR"
 elif [[ ! -x "$FFDIR/ffmpeg" ]]; then
+  # LGPL builds only (no GPL parts: Airlog doesn't use any). packaging/check_ffmpeg.py enforces it below.
   rm -rf "$FFDIR" .build/ff_dl; mkdir -p "$FFDIR" .build/ff_dl
-  MR="https://ffmpeg.martin-riedl.de/redirect/latest/$PLAT/$MR_ARCH/release"
-  fetch_mr() {   # Martin Riedl's static builds: one zip per tool
-    for t in ffmpeg ffprobe ffplay; do
-      if curl -fsSL -o ".build/ff_dl/$t.zip" "$MR/$t.zip"; then
-        unzip -oq ".build/ff_dl/$t.zip" -d .build/ff_dl/x && mv ".build/ff_dl/x/$t" "$FFDIR/"
-      elif [[ $t != ffplay ]]; then return 1; fi
-    done
-  }
   if [[ $PLAT == linux ]]; then
-    URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-$BTBN-gpl.tar.xz"
+    URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-$BTBN-lgpl.tar.xz"
     echo "Downloading $URL"
-    if curl -fsSL -o .build/ff_dl/ff.tar.xz "$URL" && tar -xJf .build/ff_dl/ff.tar.xz -C .build/ff_dl; then
-      cp .build/ff_dl/*/bin/ffmpeg .build/ff_dl/*/bin/ffprobe "$FFDIR/"
-      cp .build/ff_dl/*/bin/ffplay "$FFDIR/" 2>/dev/null || true
-      cp .build/ff_dl/*/LICENSE.txt "$FFDIR/LICENSE.txt" 2>/dev/null || true
-      FF_SOURCE="$URL"
-    else
-      echo "  failed; trying $MR"; fetch_mr; FF_SOURCE="$MR"
-    fi
+    curl -fsSL --retry 3 -o .build/ff_dl/ff.tar.xz "$URL" && tar -xJf .build/ff_dl/ff.tar.xz -C .build/ff_dl \
+      || { echo "ffmpeg download failed. Set FFMPEG_DIR to a folder with static LGPL ffmpeg + ffprobe."; exit 1; }
+    cp .build/ff_dl/*/bin/ffmpeg .build/ff_dl/*/bin/ffprobe "$FFDIR/"
+    cp .build/ff_dl/*/bin/ffplay "$FFDIR/" 2>/dev/null || true
+    cp .build/ff_dl/*/LICENSE.txt "$FFDIR/LICENSE.txt" 2>/dev/null || true
+    FF_SOURCE="$URL (https://github.com/BtbN/FFmpeg-Builds)"
   else
-    echo "Downloading $MR/{ffmpeg,ffprobe,ffplay}.zip"
-    fetch_mr || { echo "ffmpeg download failed. Set FFMPEG_DIR to a folder with static ffmpeg + ffprobe."; exit 1; }
-    FF_SOURCE="$MR"
+    # Prebuilt macOS downloads are all GPL builds: build a small LGPL one (cached between CI runs).
+    packaging/build_ffmpeg_macos.sh "$FFDIR"
+    FF_SOURCE=$(cat "$FFDIR/SOURCE")
   fi
   echo "$FF_SOURCE" > "$FFDIR/SOURCE"
   rm -rf .build/ff_dl
@@ -103,10 +94,7 @@ for t in ffmpeg ffprobe; do [[ -x "$FFDIR/$t" ]] || { echo "$t missing from $FFD
 LICDIR=.build/licenses
 rm -rf "$LICDIR"; mkdir -p "$LICDIR"
 [[ -f "$FFDIR/LICENSE.txt" ]] && cp "$FFDIR/LICENSE.txt" "$LICDIR/ffmpeg-LICENSE.txt"
-cat > "$LICDIR/ffmpeg-NOTICE.txt" <<EOF
-Airlog bundles FFmpeg (https://ffmpeg.org) from $FF_SOURCE
-FFmpeg is licensed under the GNU GPL (this build). Source: https://ffmpeg.org/download.html
-EOF
+"$VPY" packaging/check_ffmpeg.py "$FFDIR/ffmpeg" "$PLAT" "$FF_SOURCE" "$LICDIR/ffmpeg-NOTICE.txt"
 
 # ---------------------------------------------------------------- PyInstaller
 step "PyInstaller"

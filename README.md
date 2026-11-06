@@ -468,8 +468,11 @@ On any Windows 10/11 PC with Python 3.10+ (`winget install Python.Python.3.12`),
 double-click **`build_windows.bat`** (or run `.\build_windows.ps1`). It:
 
 1. creates a private build environment and installs PyInstaller;
-2. downloads ffmpeg (gyan.dev "essentials", falling back to BtbN) and bundles
-   `ffmpeg.exe`, `ffprobe.exe` and `ffplay.exe`, so the PC needs nothing else;
+2. downloads an **LGPL** ffmpeg (BtbN's `win64-lgpl` build) and bundles
+   `ffmpeg.exe`, `ffprobe.exe` and `ffplay.exe`, so the PC needs nothing else.
+   `packaging/check_ffmpeg.py` checks it's LGPL and has every codec, protocol and
+   filter Airlog uses, and writes `licenses/ffmpeg-NOTICE.txt` with the exact
+   version and where its source is;
 3. builds `dist\Airlog\Airlog.exe` with the Airlog icon and version info;
 4. **self-tests the exe** (`Airlog.exe --selftest`): Tk, the bundled ffmpeg,
    and a real 4-second capture, archive file and grab;
@@ -492,9 +495,12 @@ On the machine type you're building for (the build is for its own CPU), run
 `dpkg-dev` for the .deb). It:
 
 1. creates a private build environment and installs PyInstaller;
-2. downloads a static ffmpeg (Linux: BtbN, falling back to Martin Riedl's
-   builds; macOS: Martin Riedl's builds) and bundles it, or uses
-   `FFMPEG_DIR=/path/to/static/ffmpeg ./build_unix.sh`;
+2. gets a static **LGPL** ffmpeg and bundles it. On Linux that's BtbN's
+   `-lgpl` build. On macOS every prebuilt download is a GPL build, so
+   `packaging/build_ffmpeg_macos.sh` builds one from source with only what
+   Airlog uses (about 10 minutes the first time; CI caches it). Or use your own:
+   `FFMPEG_DIR=/path/to/static/ffmpeg ./build_unix.sh`. Either way
+   `packaging/check_ffmpeg.py` checks it as on Windows;
 3. builds `dist/Airlog/Airlog` (Linux) or `dist/Airlog.app` (macOS);
 4. **self-tests the build** the same way as the Windows exe;
 5. writes `dist/Airlog-<version>-linux-<arch>.tar.gz` and
