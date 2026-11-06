@@ -11,7 +11,7 @@
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
 }
 *{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+html,body{margin:0;overscroll-behavior-x:none;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 button{font:inherit;color:var(--fg);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 11px;cursor:pointer;white-space:nowrap}
 button:hover{background:#323844}
 button:disabled{opacity:.45;cursor:default}
@@ -43,7 +43,7 @@ header{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:s
 main{padding:14px 18px 18px;display:flex;flex-direction:column;gap:12px}
 .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .toolbar .grow{flex:1}
-#wavewrap{position:relative;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--wavebg);touch-action:none}
+#wavewrap{overscroll-behavior:none;position:relative;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--wavebg);touch-action:none}
 #wave{display:block;width:100%;height:230px;cursor:text}
 
 .controls{display:grid;grid-template-columns:minmax(380px,1.6fr) minmax(220px,.8fr) minmax(220px,1fr);gap:12px}
@@ -129,7 +129,7 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
 <main>
   <div class="toolbar">
     <strong>Timeline</strong>
-    <span class="dim">drag to select · drag edges to adjust · wheel scrolls · Ctrl+wheel zooms · double-click selects the hour</span>
+    <span class="dim">drag to select · drag edges to adjust · scroll or swipe sideways to move · Ctrl+wheel or pinch zooms · double-click selects the hour</span>
     <span class="grow"></span>
     <label><input type="checkbox" id="follow" checked> Follow live</label>
     <button class="small" id="livebtn">» Live</button>
@@ -717,9 +717,15 @@ wave.addEventListener("dblclick", e => {
 });
 wave.addEventListener("wheel", e => {
   e.preventDefault();
-  const delta = e.deltaY || e.deltaX;
-  if (e.ctrlKey || e.metaKey){
-    const [t0, t1] = view(), anchor = xToT(e.offsetX), f = delta > 0 ? 1.25 : 0.8;
+  // Trackpads send both axes at once (a sideways swipe still wobbles vertically), so take whichever
+  // axis the gesture is mostly along. Line/page units (Firefox with a mouse wheel) become pixels.
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? wave.clientWidth : 1;
+  const delta = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * unit;
+  if (!delta) return;
+  if (e.ctrlKey || e.metaKey){       // Ctrl+wheel, or a trackpad pinch (browsers report it as Ctrl+wheel)
+    // In proportion to the movement: a mouse notch (~100) is about 1.25x; a pinch's many small steps stay smooth.
+    const f = Math.exp(Math.max(-300, Math.min(300, e.deltaY * unit)) * 0.0022);
+    const [t0, t1] = view(), anchor = xToT(e.offsetX);
     const ns = Math.max(5, Math.min(maxSpan(), span * f));
     if (!follow){ const r = (anchor - t0) / (t1 - t0); viewEnd = anchor + (1 - r) * ns; }
     setSpan(ns, false);
