@@ -58,16 +58,25 @@ def start(name):
     return p, d
 
 
-def finish(p, d, how):
+def stopped(p, d, how, t0):
+    """The service must exit promptly and cleanly; if not, show its log (with thread stacks)."""
     try:
-        p.wait(timeout=20)
+        p.wait(timeout=25)
     except subprocess.TimeoutExpired:
         os.killpg(p.pid, signal.SIGKILL)
-        raise AssertionError(f"{how}: the service didn't exit")
+        raise AssertionError(f"{how}: the service didn't exit:\n" + (d / "log.txt").read_text()[-8000:])
+    took = time.time() - t0
+    text = (d / "log.txt").read_text()
+    assert took < 10 and "exiting anyway" not in text, f"{how}: stopping took {took:.1f}s:\n{text[-8000:]}"
+    return took
+
+
+def finish(p, d, how, t0):
+    took = stopped(p, d, how, t0)
     text = (d / "log.txt").read_text()
     after = text.split("Service stopping", 1)[1] if "Service stopping" in text else ""
     files = sorted((d / "arch").rglob("*.mp3"))
-    print(f"   exit {p.returncode}; {len(files)} archive file(s); log after 'Service stopping': "
+    print(f"   exit {p.returncode} after {took:.1f}s; {len(files)} archive file(s); log after 'Service stopping': "
           f"{[line for line in after.splitlines() if line.strip()] or 'nothing'}")
     assert "Service stopping" in text, text
     for bad in ("Source ended", "retrying", "reconnecting", "connection lost", "Traceback", "Bad file descriptor",
@@ -81,13 +90,15 @@ def finish(p, d, how):
 
 print("-- stop by SIGTERM to the whole process group (ffmpeg dies with Airlog)")
 p, d = start("group")
+t0 = time.time()
 os.killpg(p.pid, signal.SIGTERM)
-finish(p, d, "group SIGTERM")
+finish(p, d, "group SIGTERM", t0)
 
 print("-- stop by SIGTERM to Airlog only (systemd KillMode=mixed, launchd)")
 p, d = start("main")
+t0 = time.time()
 os.kill(p.pid, signal.SIGTERM)
-finish(p, d, "SIGTERM")
+finish(p, d, "SIGTERM", t0)
 
 print("-- a real dropout while running is still noticed and recovered")
 p, d = start("dropout")
@@ -100,8 +111,20 @@ while time.time() < deadline and (d / "log.txt").read_text().count("Recording") 
 text = (d / "log.txt").read_text()
 assert "Source ended" in text and text.count("Recording") >= 2, text
 print("   OK (source ended, retried, recording again)")
+t0 = time.time()
 os.kill(p.pid, signal.SIGTERM)
-p.wait(timeout=20)
+print(f"   and stopped in {stopped(p, d, 'stop after a dropout', t0):.1f}s")
+
+print("-- a stop that hangs is cut short, with every thread's stack logged")
+hang = subprocess.run([sys.executable, "-c", "import sys, time, threading\n"
+                       f"sys.path.insert(0, {str(ROOT)!r})\n"
+                       "from airlog import servicecore\n"
+                       "servicecore.STOP_LIMIT_S = 1\n"
+                       "def stuck():\n    time.sleep(60)\n"
+                       "servicecore._stop_watchdog()\nstuck()\n"],
+                      capture_output=True, text=True, timeout=20)
+assert hang.returncode == 0 and "exiting anyway" in hang.stdout and "in stuck" in hang.stdout, hang.stdout + hang.stderr
+print("   OK (exited after 1 s, stack shows the stuck function)")
 
 assert "KillMode=mixed" in unixservice._unit_text("nobody", ["/opt/airlog/Airlog"])
 print("shutdown OK")

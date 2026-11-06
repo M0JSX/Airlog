@@ -50,11 +50,33 @@ def serve_until(config_path: Path, wait) -> None:
     finally:
         lifecycle.begin_shutdown()
         print(f"{stamp()} Service stopping", flush=True)
+        _stop_watchdog()
         # The web server isn't closed: closing its sockets under its own loop is what logged the
         # "Bad file descriptor" tracebacks, and it's a daemon thread that ends with the process.
         if holder.advertiser:
             holder.advertiser.close()
         holder.engine.stop()
+
+
+STOP_LIMIT_S = 15
+
+
+def _stop_watchdog() -> None:
+    """A stop must never hang (systemd/launchd/Windows would wait, then kill us without a word). If
+    stopping takes longer than STOP_LIMIT_S, log where every thread is, so the cause can be found,
+    then exit. The archive file still completes: its encoder is a separate process that finishes the
+    file when our end of its pipe closes."""
+    def watch():
+        time.sleep(STOP_LIMIT_S)
+        import faulthandler
+        print(f"{stamp()} Stopping took over {STOP_LIMIT_S}s; exiting anyway. Where each thread was:", flush=True)
+        try:
+            faulthandler.dump_traceback(file=sys.stdout, all_threads=True)
+        except Exception:                         # no real stdout (e.g. a Windows service): skip the dump
+            pass
+        sys.stdout.flush()
+        os._exit(0)
+    threading.Thread(target=watch, name="stop-watchdog", daemon=True).start()
 
 
 def config_port(config_path: Path) -> int:
