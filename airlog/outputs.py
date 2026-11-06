@@ -59,6 +59,9 @@ BITRATES = {
     "opus": [24, 32, 48, 64, 96, 128, 160, 192, 256],
 }
 FIXED_BITRATES = ("mp3", "mp2")
+KEEPALIVE_AFTER_S = 1.0          # no audio for this long: the outputs get silence
+KEEPALIVE_TICK_S = 0.1
+KEEPALIVE_ANNOUNCE_S = 3.0       # log it once the silence has lasted this long
 
 
 def snap_bitrate(codec: str, kbps) -> int:
@@ -952,6 +955,8 @@ class OutputSet:
         self.items = [Output(engine, s) for s in specs]
         self.active = [o for o in self.items if o.o["enabled"]]
         self._lock = threading.Lock()
+        self._last_feed = time.monotonic()
+        self._keepalive_on = False
 
     def set_enabled(self, oid: str, on: bool) -> None:
         """Turn one output on or off while recording carries on (the main page's switches)."""
@@ -980,14 +985,53 @@ class OutputSet:
     def start(self) -> None:
         for o in self.active:
             o.start()
+        self._last_feed = time.monotonic()
+        self._keepalive_on = True
+        threading.Thread(target=self._keepalive, name="outputs-keepalive", daemon=True).start()
 
     def stop(self) -> None:
+        self._keepalive_on = False
         for o in self.items:
             o.stop()
 
     def feed(self, pcm: bytes) -> None:
+        self._last_feed = time.monotonic()
         for o in self.active:
             o.feed(pcm)
+
+    # ------------------------------------------------------------------ keepalive
+    def _keepalive(self) -> None:
+        """While the source gives no audio (a stalled stream, a reconnect, startup), send the outputs
+        silence in real time, as a broadcast encoder does. A streaming server whose source sends
+        nothing drops it ("Timeout waiting for stream data"): Shoutcast DNAS 2.6 did after 6-7 s of a
+        stalled source. Listeners get cut off and everything has to reconnect. With silence they hear a gap, then the programme carries on."""
+        e = self.engine
+        silent_since = None            # monotonic: when the outputs started getting silence
+        announced = False
+        sent_until = 0.0
+        while self._keepalive_on:
+            time.sleep(KEEPALIVE_TICK_S)
+            now = time.monotonic()
+            if now - self._last_feed < KEEPALIVE_AFTER_S:
+                if announced and silent_since is not None:
+                    e.log(f"Source audio back: outputs resume after {now - silent_since:.0f}s of silence")
+                silent_since, announced = None, False
+                continue
+            if not self.active or lifecycle.SHUTTING_DOWN.is_set():
+                continue
+            if silent_since is None:
+                silent_since = sent_until = self._last_feed + KEEPALIVE_AFTER_S
+            if not announced and now - silent_since >= KEEPALIVE_ANNOUNCE_S:
+                e.log("No audio from the source: outputs are sending silence to stay connected")
+                announced = True
+            secs = min(now - sent_until, 1.0)    # never more than a second at once, even after a hiccup
+            frames = int(secs * e.sr)
+            if frames <= 0:
+                continue
+            sent_until += frames / e.sr
+            block = bytes(frames * e.bpf)
+            for o in self.active:
+                o.feed(block)
 
     def status(self) -> list[dict]:
         return [o.status() for o in self.items]

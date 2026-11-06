@@ -338,6 +338,12 @@ on/off switch and status, shown under the station name (hover for details):
 An output that can't keep up (slow network, server gone) drops its oldest
 audio and reconnects with a back-off. The recording itself is never held up.
 
+If the source stalls or drops, the outputs send **silence** after a second
+without audio, as a broadcast encoder does. Icecast and Shoutcast servers keep
+the connection (Shoutcast DNAS 2 drops a source that sends nothing for just a
+few seconds), and listeners hear a gap, not a disconnect. When the source returns, the
+programme carries on in the same stream.
+
 **Sound card output.** Pick the card with **Refresh**; the choice is saved by
 name, so it survives reboots and other cards being plugged in. **Buffer (ms)**
 (default 200) is the delay to the card: Airlog keeps that much audio queued so

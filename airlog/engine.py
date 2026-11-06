@@ -635,7 +635,9 @@ class Engine:
                 step = self.sr  # 1 s chunks
                 while frames > 0:
                     k = min(step, frames)
-                    self._emit(bytes(k * self.bpf), k)
+                    # Archive and buffer only: the outputs already sent this silence in real time
+                    # (OutputSet keepalive). Sending it again now would arrive as one big burst.
+                    self._emit(bytes(k * self.bpf), k, to_outputs=False)
                     frames -= k
             else:
                 self.log(f"Gap of {drift/60:.1f} min - starting a new archive file")
@@ -649,7 +651,7 @@ class Engine:
             self._pending_new_segment = True
         self._emit(pcm, n)
 
-    def _emit(self, pcm: bytes, n: int) -> None:
+    def _emit(self, pcm: bytes, n: int, to_outputs: bool = True) -> None:
         start = self.t0 + self.total / self.sr
         cfg = self.cfg
         if cfg.archive_enabled and not lifecycle.SHUTTING_DOWN.is_set():   # no new files while stopping
@@ -677,7 +679,8 @@ class Engine:
                     self._close_archive()
 
         self.spool.write(pcm, start, new_segment=self._pending_new_segment)
-        self.outputs.feed(pcm)
+        if to_outputs:
+            self.outputs.feed(pcm)
         self._pending_new_segment = False
         self._measure(pcm, start)
         self.total += n
