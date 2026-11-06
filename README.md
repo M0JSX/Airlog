@@ -205,7 +205,7 @@ turns the announcement off.
   the buffer, since that's as far back as you can grab.
   - Drag to select, drag an edge to adjust, Shift-click to extend.
   - Double-click selects the whole hour.
-  - Wheel scrolls; Ctrl+wheel (or trackpad pinch) zooms.
+  - Wheel or a sideways trackpad swipe scrolls; Ctrl+wheel (or trackpad pinch) zooms.
   - **Zoom to selection** helps with fine edits.
 - **Mark In (F2)** when an item starts and **Mark Out (F3)** when it ends.
   - **Download (F4)** fetches the selection.
