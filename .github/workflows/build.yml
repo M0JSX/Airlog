@@ -79,7 +79,9 @@ jobs:
           if-no-files-found: error
 
   macos:
-    runs-on: macos-latest   # Apple Silicon
+    # Apple Silicon. Set the repo variable MAC_RUNNER to a self-hosted runner's label (e.g. airlog-mac)
+    # to build on your own Mac instead of waiting for GitHub's; delete the variable to switch back.
+    runs-on: ${{ vars.MAC_RUNNER || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v7
 
