@@ -1003,8 +1003,8 @@ class OutputSet:
     def _keepalive(self) -> None:
         """While the source gives no audio (a stalled stream, a reconnect, startup), send the outputs
         silence in real time, as a broadcast encoder does. A streaming server whose source sends
-        nothing drops it after ~30 s ("Timeout waiting for stream data"); listeners get cut off and
-        everything has to reconnect. With silence they hear a gap, then the programme carries on."""
+        nothing drops it ("Timeout waiting for stream data"): Shoutcast DNAS 2.6 did after 6-7 s of a
+        stalled source. Listeners get cut off and everything has to reconnect. With silence they hear a gap, then the programme carries on."""
         e = self.engine
         silent_since = None            # monotonic: when the outputs started getting silence
         announced = False
