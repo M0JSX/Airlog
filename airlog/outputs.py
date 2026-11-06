@@ -397,9 +397,6 @@ class Output:
     def start(self) -> None:
         if not self.o["enabled"]:
             return
-        old = self.thread
-        if old is not None and old.is_alive():       # switched off and straight back on: let the old run end
-            old.join(timeout=5)
         self.running = True
         self.thread = threading.Thread(target=self._run, name=f"output-{self.o['id']}", daemon=True)
         self.thread.start()
@@ -448,9 +445,11 @@ class Output:
             try:
                 ok = self._session()
             except OutputError as e:
-                self._set("error", str(e), error=True)
+                if self.running:                  # not from a sender that was switched off meanwhile
+                    self._set("error", str(e), error=True)
             except Exception as e:  # noqa: BLE001 - keep the output thread alive whatever happens
-                self._set("error", f"{type(e).__name__}: {e}"[:200], error=True)
+                if self.running:
+                    self._set("error", f"{type(e).__name__}: {e}"[:200], error=True)
             finally:
                 self._kill()
             if not self.running or lifecycle.SHUTTING_DOWN.is_set():
@@ -663,6 +662,9 @@ class Output:
         _, ctype = codec_args(o, self.engine.sr, self.engine.ch)
         self._set("connecting", describe(o))
         sock = self.sock = (_icecast_connect if o["kind"] == "icecast" else _shoutcast_connect)(o, ctype, self.engine)
+        if not self.running:                  # switched off while connecting: let go of the server at once
+            sock.close()
+            return False
         proc = self.proc = self._encoder(["pipe:1"], "error")
         threading.Thread(target=self._pump_pcm, args=(proc,), daemon=True).start()
         errs: list[str] = []
@@ -961,12 +963,15 @@ class OutputSet:
                 return
             item.o["enabled"] = on
             if on:
-                item.state, item.detail, item.dropped = "starting", "", 0
-                item._drain()
-                self.engine.log(f"Output \"{item.o['name']}\" switched on")
-                self.active = self.active + [item]       # a new list: feed() may be iterating the old one
+                # A fresh Output, not the old one restarted: if the old one is still stuck in a
+                # connect (a slow or unreachable server), it finishes on its own, sees it was stopped
+                # and exits, instead of carrying on beside the new one (two sources on one mount).
+                new = Output(self.engine, item.o)
+                self.items = [new if o is item else o for o in self.items]
+                self.engine.log(f"Output \"{new.o['name']}\" switched on")
+                self.active = self.active + [new]        # a new list: feed() may be iterating the old one
                 if self.engine.running:
-                    item.start()
+                    new.start()
             else:
                 self.active = [o for o in self.active if o is not item]
                 item.stop()

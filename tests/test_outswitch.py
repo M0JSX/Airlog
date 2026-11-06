@@ -113,7 +113,84 @@ assert r.status_code == 403, r.status_code
 assert state("b")["state"] == "sending"
 print("   OK")
 
+# All that switching never restarted the recorder (the Settings save below does, deliberately).
+assert sum("Recording" == line.split("  ", 1)[-1] for line in e.logs) == 1, [x for x in e.logs if "Recording" in x]
+
+print("-- switched off and on while connecting to a slow server: one source, never two")
+
+
+class SlowIcecast:
+    """Answers each source connection after 3 s; records which connections then carried audio."""
+
+    def __init__(self):
+        self.srv = socket.socket()
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(8)
+        self.port = self.srv.getsockname()[1]
+        self.conns = []                      # [bytes of audio] per connection
+        self.live = 0
+        self.most_live = 0
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._one, args=(c,), daemon=True).start()
+
+    def _one(self, c):
+        i = len(self.conns)
+        self.conns.append(0)
+        c.recv(4096)
+        time.sleep(3)
+        try:
+            c.sendall(b"HTTP/1.1 200 OK\r\n\r\n")
+            c.settimeout(1)
+            streaming = False
+            while True:
+                try:
+                    got = c.recv(65536)
+                except socket.timeout:
+                    continue
+                if not got:
+                    break
+                if not streaming:
+                    streaming = True
+                    self.live += 1
+                    self.most_live = max(self.most_live, self.live)
+                self.conns[i] += len(got)
+            if streaming:
+                self.live -= 1
+        except OSError:
+            pass
+
+
+slow = SlowIcecast()
+specs = json.loads(cfg_path.read_text())["outputs"]
+specs.append({"id": "s", "name": "Slow", "kind": "icecast", "enabled": False, "host": "127.0.0.1",
+              "port": slow.port, "password": "pw", "send_titles": False})
+r = c.post("/api/config", json={"outputs": specs})
+assert r.status_code == 200, r.get_json()
+assert wait(lambda: holder.engine is not e and holder.engine.running, 15)
+e = holder.engine
+assert wait(lambda: state("a")["state"] == "sending", 15)
+switch("s", True)
+time.sleep(1)                                  # connecting: the server is holding the reply
+t0 = time.time()
+switch("s", False)
+switch("s", True)
+assert time.time() - t0 < 1.5, f"switching waited {time.time() - t0:.1f}s for the old connection"
+assert wait(lambda: state("s")["state"] == "connected", 15), state("s")
+time.sleep(4)
+print(f"   connections: {len(slow.conns)}, audio per connection: {slow.conns}, most at once: {slow.most_live}")
+assert slow.most_live == 1, "two sources streamed at once"
+assert sum(1 for n in slow.conns if n > 0) == 1, slow.conns
+names = [t.name for t in threading.enumerate()]
+assert names.count("output-s") == 1, names
+print("   OK")
+
 e.stop()
-assert "Recording" in "\n".join(e.logs) and sum("Recording" == line.split("  ", 1)[-1] for line in e.logs) == 1, \
-    [x for x in e.logs if "Recording" in x]
 print("outswitch OK")
