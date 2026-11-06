@@ -350,6 +350,7 @@ class Output:
         self.stream = None                # sound card output stream
         self.underruns = 0                # sound card: blocks of silence played because no audio was ready
         self.running = False
+        self.thread: threading.Thread | None = None
         self._last_logged = ("", "")
         self._title_sent = None
 
@@ -376,6 +377,7 @@ class Output:
             except OSError:
                 pass
         return {"id": o["id"], "name": o["name"], "kind": o["kind"], "codec": o["codec"], "underruns": self.underruns,
+                "enabled": bool(o["enabled"]),
                 "processing": describe_processing(o),
                 "target": describe(o), "state": self.state, "detail": self.detail, "since": self.since,
                 "sent": self.sent, "dropped": self.dropped, "sdp": self.sdp}
@@ -395,8 +397,12 @@ class Output:
     def start(self) -> None:
         if not self.o["enabled"]:
             return
+        old = self.thread
+        if old is not None and old.is_alive():       # switched off and straight back on: let the old run end
+            old.join(timeout=5)
         self.running = True
-        threading.Thread(target=self._run, name=f"output-{self.o['id']}", daemon=True).start()
+        self.thread = threading.Thread(target=self._run, name=f"output-{self.o['id']}", daemon=True)
+        self.thread.start()
 
     def stop(self) -> None:
         self.running = False
@@ -936,8 +942,31 @@ class OutputSet:
         except ValueError as e:
             engine.log(f"Outputs not started: {e}", error=True)
             specs = []
+        self.engine = engine
         self.items = [Output(engine, s) for s in specs]
         self.active = [o for o in self.items if o.o["enabled"]]
+        self._lock = threading.Lock()
+
+    def set_enabled(self, oid: str, on: bool) -> None:
+        """Turn one output on or off while recording carries on (the main page's switches)."""
+        with self._lock:
+            item = next((o for o in self.items if o.o["id"] == oid), None)
+            if item is None:
+                raise KeyError(oid)
+            if bool(item.o["enabled"]) == on:
+                return
+            item.o["enabled"] = on
+            if on:
+                item.state, item.detail, item.dropped = "starting", "", 0
+                item._drain()
+                self.engine.log(f"Output \"{item.o['name']}\" switched on")
+                self.active = self.active + [item]       # a new list: feed() may be iterating the old one
+                if self.engine.running:
+                    item.start()
+            else:
+                self.active = [o for o in self.active if o is not item]
+                item.stop()
+                self.engine.log(f"Output \"{item.o['name']}\" switched off (recording carries on)")
 
     def start(self) -> None:
         for o in self.active:

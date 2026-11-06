@@ -305,7 +305,9 @@ assert any(b"icy-name:A_shout" in r for r in data_srv.requests), data_srv.reques
 assert any(b"icy-br:96" in r for r in data_srv.requests), data_srv.requests
 f = data_srv.first
 assert f[0] == 0xFF and f[1] & 0xE0 == 0xE0, f"stream doesn't start on an MP3 frame: {f[:16]!r}"
-assert b"ID3" not in f[:10] and b"Xing" not in f and b"Info" not in f[:600] and b"LAME" not in f[:600], f[:64]
+# A Xing/Info header sits inside the first frame (288 bytes at 96 kbps / 48 kHz). LAME also writes its
+# version into unused bits of ordinary audio frames, which is fine and not checked for.
+assert not f.startswith(b"ID3") and b"Xing" not in f[:288] and b"Info" not in f[:288], f[:64]
 # 96 kbps really: frame header bitrate index for MPEG-1 Layer III 96 kbps is 7
 assert (f[2] >> 4) == 7, f"first frame isn't 96 kbps (index {f[2] >> 4})"
 print(f"   OK ({data_srv.audio // 1024} KB sent; starts on a 96 kbps MP3 frame, no ID3/Xing)")

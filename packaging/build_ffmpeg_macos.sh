@@ -66,8 +66,8 @@ autobuild vorbis --with-ogg="$PREFIX" --disable-examples --disable-docs
 autobuild opus --disable-doc --disable-extra-programs
 
 echo "Building openssl"
-(cd "$SRC/openssl" && ./Configure darwin64-arm64-cc no-shared no-tests no-docs --prefix="$PREFIX" --libdir=lib >/dev/null \
-   && make -j"$JOBS" >/dev/null && make install_sw >/dev/null)
+(cd "$SRC/openssl" && ./Configure darwin64-arm64-cc no-shared no-tests --prefix="$PREFIX" --libdir=lib >/dev/null \
+   && make -j"$JOBS" >/dev/null && make install_sw >/dev/null)   # install_sw: no docs
 
 echo "Building srt"
 (cd "$SRC/srt" && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \

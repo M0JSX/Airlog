@@ -229,6 +229,10 @@ turns the announcement off.
 - **Hourly archive** lists the finished hourly files to play or download.
 
   ![The Hourly archive tab](docs/screenshots/archive.png)
+- **Output switches:** each output listed under the station name has an on/off
+  switch. It takes effect straight away and is saved, and the recording isn't
+  interrupted: use it to take a stream down without stopping the logger. It
+  needs the same permission as Start/Stop.
 - **Settings** edits everything (source, formats, folders, buffer, password).
   Saving restarts the recorder, and the gap of a second or two is filled with
   silence.
