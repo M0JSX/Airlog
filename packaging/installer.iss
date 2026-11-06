@@ -1,5 +1,5 @@
 ; Inno Setup script for Airlog. Built by build_windows.ps1 after PyInstaller:
-;   iscc /DAppVersion=1.6.9 packaging\installer.iss
+;   iscc /DAppVersion=1.6.10 packaging\installer.iss
 ; Output: dist\Airlog-Setup-<version>.exe
 ;
 ; Installs to Program Files and registers the "Airlog Recorder" Windows service
@@ -7,7 +7,7 @@
 ; Running a newer Setup over an existing install upgrades it in place.
 
 #ifndef AppVersion
-  #define AppVersion "1.6.9"
+  #define AppVersion "1.6.10"
 #endif
 
 [Setup]
@@ -47,6 +47,8 @@ Type: files; Name: "{commondesktop}\Airlog.lnk"
 
 [Files]
 Source: "..\dist\Airlog\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+; Used by PrepareToInstall only; not installed.
+Source: "stop_airlog.ps1"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\Airlog"; Filename: "{app}\Airlog.exe"; Comment: "Open the Airlog recorder"
@@ -69,14 +71,17 @@ Type: filesandordirs; Name: "{app}"
 FinishedLabel=Airlog is installed and the Airlog Recorder service is running. It records in the background from startup, whether or not the Airlog window is open.%n%nOther computers on your network can use http://<this-pc>:8080/
 
 [Code]
-// Upgrade: stop the running service so its files can be replaced.
+// Upgrade: stop the service and wait (up to 20 s) until nothing runs from the install folder, closing
+// whatever is left, so no file is locked. A fixed short wait wasn't enough: the service can report
+// "stopped" before its process has exited, and that left vcruntime140.dll in use.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
 begin
-  Exec('powershell.exe', '-NoProfile -Command "Stop-Service AirlogRecorder -ErrorAction SilentlyContinue"',
-       '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Sleep(1500);   // let the process exit after the service reports stopped
+  ExtractTemporaryFile('stop_airlog.ps1');
+  WizardForm.StatusLabel.Caption := 'Stopping the Airlog Recorder service...';
+  Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\stop_airlog.ps1') +
+       '" -Dir "' + ExpandConstant('{app}') + '"', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Result := '';
 end;
 

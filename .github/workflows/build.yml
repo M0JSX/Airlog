@@ -31,6 +31,24 @@ jobs:
         shell: pwsh
         run: ./build_windows.ps1
 
+      # Setup's stop script must leave nothing running from the install folder (a locked
+      # vcruntime140.dll blocked an upgrade): try it on a stand-in folder with a program running.
+      - name: Test Setup's stop script
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "Fake Airlog"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item "$env:SystemRoot\System32\PING.EXE" "$dir\Airlog.exe"
+          $p = Start-Process "$dir\Airlog.exe" -ArgumentList "-n 120 127.0.0.1" -PassThru -WindowStyle Hidden
+          Start-Sleep 1
+          if ($p.HasExited) { throw "the stand-in didn't start" }
+          $t = Measure-Command { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\stop_airlog.ps1 -Dir $dir | Write-Host }
+          Start-Sleep 1
+          $left = Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith("$dir\", [StringComparison]::OrdinalIgnoreCase) }
+          if ($left) { throw "still running from the folder: $($left.Path)" }
+          Write-Host ("OK: closed after {0:N0} s; the folder's files are free" -f $t.TotalSeconds)
+          Remove-Item "$dir\Airlog.exe"   # fails if anything still had it locked
+
       - uses: actions/upload-artifact@v7
         with:
           name: Airlog-windows-x64
