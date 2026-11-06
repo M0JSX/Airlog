@@ -24,6 +24,7 @@ ROOT=$(pwd)/.build/ffbuild
 PREFIX=$ROOT/prefix
 SRC=$ROOT/src
 mkdir -p "$PREFIX" "$SRC" "$OUT"
+OUT=$(cd "$OUT" && pwd)          # absolute: the build cds into the source folders
 export MACOSX_DEPLOYMENT_TARGET=11.0
 export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig PKG_CONFIG_LIBDIR=$PREFIX/lib/pkgconfig
 export CFLAGS="-O2 -I$PREFIX/include" LDFLAGS="-L$PREFIX/lib"
