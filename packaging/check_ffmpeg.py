@@ -64,7 +64,8 @@ def main() -> int:
         problems.append(f"missing input devices: {', '.join(missing)} (sound card capture)")
     for d in DEVICES_NICE.get(plat, []):
         if d not in devs:
-            print(f"  note: no '{d}' input device in this build (sound card capture via {d} won't work)")
+            how = "Airlog reads ALSA cards through PortAudio instead" if d == "alsa" else f"capture via {d} won't work"
+            print(f"  note: no '{d}' input device in this build ({how})")
     if problems:
         print("FFmpeg check failed for " + ff + ":\n  " + "\n  ".join(problems))
         return 1

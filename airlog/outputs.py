@@ -878,13 +878,17 @@ def _send_title(o: dict, title: str, engine: "Engine") -> None:
 # ---------------------------------------------------------------- sound cards
 def sounddevice_module():
     """The sounddevice (PortAudio) module, or an OutputError saying how to get it."""
+    import os
     import sys
+    # ALSA: open hw:X,Y cards as plughw:X,Y, so ALSA converts the rate/format if a card can't do
+    # 48 kHz stereo itself. Must be set before PortAudio starts.
+    os.environ.setdefault("PA_ALSA_PLUGHW", "1")
     try:
         import sounddevice
         return sounddevice
     except OSError:                       # the module is there but the PortAudio library isn't
         if sys.platform.startswith("linux"):
-            raise OutputError("sound card output needs PortAudio: sudo apt install libportaudio2") from None
+            raise OutputError("sound cards need PortAudio: sudo apt install libportaudio2") from None
         raise OutputError("sound card output: the PortAudio library couldn't be loaded") from None
     except ImportError:
         raise OutputError("sound card output isn't available in this build (sounddevice not installed)") from None

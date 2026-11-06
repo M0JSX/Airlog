@@ -29,25 +29,33 @@ export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig
 export CFLAGS="-O2 -I$PREFIX/include" LDFLAGS="-L$PREFIX/lib"
 JOBS=$(sysctl -n hw.ncpu)
 
-fetch() {   # url, dir name: download and unpack into $SRC/<dir>
-  local url=$1 dir=$2
+fetch() {   # dir name, url [mirror url...]: download (retrying, then mirrors) and unpack into $SRC/<dir>
+  local dir=$1; shift
   [[ -d "$SRC/$dir" ]] && return
-  echo "  $url"
-  curl -fsSL --retry 3 -o "$SRC/dl" "$url"
-  mkdir -p "$SRC/$dir"
-  tar -xf "$SRC/dl" -C "$SRC/$dir" --strip-components 1
-  rm -f "$SRC/dl"
+  for url in "$@"; do
+    echo "  $url"
+    if curl -fsSL --retry 4 --retry-all-errors --retry-delay 5 -o "$SRC/dl" "$url"; then
+      mkdir -p "$SRC/$dir"
+      tar -xf "$SRC/dl" -C "$SRC/$dir" --strip-components 1
+      rm -f "$SRC/dl"
+      return
+    fi
+  done
+  echo "Couldn't download $dir"; exit 1
 }
 
 echo "Fetching sources"
-fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_V.tar.xz" ffmpeg
-fetch "https://downloads.sourceforge.net/project/lame/lame/$LAME_V/lame-$LAME_V.tar.gz" lame
-fetch "https://downloads.xiph.org/releases/ogg/libogg-$OGG_V.tar.xz" ogg
-fetch "https://downloads.xiph.org/releases/vorbis/libvorbis-$VORBIS_V.tar.xz" vorbis
-fetch "https://downloads.xiph.org/releases/opus/opus-$OPUS_V.tar.gz" opus
-fetch "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_V/openssl-$OPENSSL_V.tar.gz" openssl
-fetch "https://github.com/Haivision/srt/archive/refs/tags/v$SRT_V.tar.gz" srt
-fetch "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_V/SDL2-$SDL_V.tar.gz" sdl
+fetch ffmpeg "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_V.tar.xz" \
+      "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n$FFMPEG_V.tar.gz"
+fetch lame "https://downloads.sourceforge.net/project/lame/lame/$LAME_V/lame-$LAME_V.tar.gz"
+fetch ogg "https://downloads.xiph.org/releases/ogg/libogg-$OGG_V.tar.xz" \
+      "https://github.com/xiph/ogg/releases/download/v$OGG_V/libogg-$OGG_V.tar.xz"
+fetch vorbis "https://downloads.xiph.org/releases/vorbis/libvorbis-$VORBIS_V.tar.xz"
+fetch opus "https://downloads.xiph.org/releases/opus/opus-$OPUS_V.tar.gz" \
+      "https://github.com/xiph/opus/releases/download/v$OPUS_V/opus-$OPUS_V.tar.gz"
+fetch openssl "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_V/openssl-$OPENSSL_V.tar.gz"
+fetch srt "https://github.com/Haivision/srt/archive/refs/tags/v$SRT_V.tar.gz"
+fetch sdl "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_V/SDL2-$SDL_V.tar.gz"
 
 autobuild() {   # dir, extra configure args...
   local d=$1; shift

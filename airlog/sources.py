@@ -27,6 +27,50 @@ def default_backend() -> str:
 
 BACKENDS = ["dshow", "avfoundation", "pulse", "alsa"]
 
+_ffmpeg_devices: dict[str, set[str]] = {}
+
+
+def ffmpeg_devices(ffmpeg: str) -> set[str]:
+    """Input/output device names this ffmpeg supports (cached per binary)."""
+    if ffmpeg not in _ffmpeg_devices:
+        names = set()
+        for line in _run([ffmpeg, "-hide_banner", "-devices"], timeout=10).splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and re.fullmatch(r"[DE.]+", parts[0]):
+                names.add(parts[1])
+        _ffmpeg_devices[ffmpeg] = names
+    return _ffmpeg_devices[ffmpeg]
+
+
+def via_portaudio(cfg: Config) -> bool:
+    """ALSA capture through PortAudio instead of ffmpeg. The static LGPL ffmpeg bundled on Linux has no
+    ALSA input (it can't link the system's libasound), but PortAudio (already needed for sound card
+    outputs) loads it, so Airlog reads the card itself and pipes the PCM into ffmpeg."""
+    return (cfg.source_type == "device" and sys.platform.startswith("linux")
+            and (cfg.device_backend or default_backend()) == "alsa"
+            and "alsa" not in ffmpeg_devices(cfg.ffmpeg_path))
+
+
+def portaudio_input(sd, name: str):
+    """The PortAudio input device for an ALSA name: 'default', 'plughw:1,0' / 'hw:1,0', or a device
+    name as PortAudio lists it. Returns (device or None for the default, label)."""
+    name = (name or "").strip()
+    devs = [(i, d) for i, d in enumerate(sd.query_devices()) if d.get("max_input_channels", 0) > 0]
+    if not name or name == "default":
+        pick = next((i for i, d in devs if d["name"] == "default"), None)
+        return pick, "the default sound card"
+    m = re.fullmatch(r"(?:plug)?hw:(\d+),(\d+)", name)
+    if m:
+        tag = f"(hw:{m.group(1)},{m.group(2)})"
+        pick = next((i for i, d in devs if d["name"].endswith(tag)), None)
+    else:
+        pick = next((i for i, d in devs if d["name"] == name), None)
+        if pick is None:
+            pick = next((i for i, d in devs if name.lower() in d["name"].lower()), None)
+    if pick is None:
+        raise ValueError(f"sound card '{name}' not found (unplugged, or in use by another program?)")
+    return pick, f"sound card '{sd.query_devices(pick)['name']}'"
+
 
 def input_args(cfg: Config) -> list[str]:
     """ffmpeg arguments placed before the output section."""
@@ -59,6 +103,9 @@ def input_args(cfg: Config) -> list[str]:
             if not spec.startswith(":"):
                 spec = ":" + spec
             return ["-f", "avfoundation", "-i", spec]
+        if backend == "alsa" and via_portaudio(cfg):
+            # Airlog reads the card through PortAudio (see via_portaudio) and pipes raw PCM in.
+            return ["-f", "s16le", "-ar", str(cfg.sample_rate), "-ac", str(cfg.channels), "-i", "pipe:0"]
         if backend in ("pulse", "alsa"):
             return ["-f", backend, "-i", name or "default"]
         raise ValueError(f"Unknown device backend {backend!r}")
@@ -178,7 +225,28 @@ def list_devices(backend: str, ffmpeg: str = "ffmpeg") -> list[tuple[str, str]]:
             # plughw lets ALSA convert rate/format if the card can't do 48k stereo natively
             out.append((f"plughw:{m.group(1)},{m.group(3)}",
                         f"{m.group(2)} — {m.group(4)} (plughw:{m.group(1)},{m.group(3)})"))
+        if not out:                       # no arecord (alsa-utils): ask PortAudio, which reads ALSA too
+            out = _portaudio_alsa_inputs()
         out.insert(0, ("default", "default"))
+    return out
+
+
+def _portaudio_alsa_inputs() -> list[tuple[str, str]]:
+    try:
+        from .outputs import sounddevice_module
+        sd = sounddevice_module()
+        devs = sd.query_devices()
+    except Exception:
+        return []
+    out = []
+    for d in devs:
+        if d.get("max_input_channels", 0) <= 0:
+            continue
+        m = re.search(r"\(hw:(\d+),(\d+)\)$", d["name"])
+        if m:
+            out.append((f"plughw:{m.group(1)},{m.group(2)}", f"{d['name'][:m.start()].strip()} (plughw:{m.group(1)},{m.group(2)})"))
+        elif d["name"] not in ("default",):
+            out.append((d["name"], d["name"]))
     return out
 
 

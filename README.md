@@ -155,7 +155,9 @@ In **Settings** choose **Sound card input**, press **Refresh** and pick the devi
 - **Linux:** driver **alsa** (the service can't reach a desktop PulseAudio/PipeWire
   session). Pick a `plughw:X,Y` entry: `plughw` lets ALSA convert to 48 kHz
   stereo if the interface runs at another rate. Set the record level with
-  `alsamixer`.
+  `alsamixer`. The FFmpeg bundled on Linux can't read ALSA itself, so Airlog
+  reads the card through PortAudio (`libportaudio2`, which the `.deb` installs;
+  for the tarball, `sudo apt install libportaudio2`) and passes the audio on.
 - **macOS:** driver **avfoundation**.
 - **Windows:** driver **dshow**.
 

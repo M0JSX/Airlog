@@ -128,9 +128,10 @@ class Capture:
                         cmd[i - 1:i - 1] = ["-f", hint]
             else:
                 self.log("Source: " + self.describe())
+            card = sources.via_portaudio(self.cfg)          # Linux ALSA: Airlog reads the card itself
             try:
                 self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                             stdin=subprocess.PIPE if sender else subprocess.DEVNULL,
+                                             stdin=subprocess.PIPE if sender or card else subprocess.DEVNULL,
                                              creationflags=NO_WINDOW)
             except OSError as e:
                 self.status = "error"
@@ -142,6 +143,8 @@ class Capture:
             threading.Thread(target=self._pump_stderr, args=(self.proc,), daemon=True).start()
             if sender:
                 threading.Thread(target=self._feed_push, args=(sender, self.proc), daemon=True).start()
+            if card:
+                threading.Thread(target=self._feed_card, args=(self.proc,), daemon=True).start()
             self.last_data = time.monotonic()
             got_any = self._read_loop(self.proc)
             if self.proc.poll() is None:
@@ -199,6 +202,37 @@ class Capture:
                 proc.stdin.flush()
         except (OSError, ValueError):
             pass
+        finally:
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+    def _feed_card(self, proc: subprocess.Popen) -> None:
+        """Sound card -> ffmpeg's stdin through PortAudio (Linux ALSA; see sources.via_portaudio).
+        If the card can't be opened or stops, ffmpeg sees the end of its input and the supervisor
+        retries as for any source that ends."""
+        cfg = self.cfg
+        sr, ch = int(cfg.sample_rate), int(cfg.channels)
+        block = sr // 10                                      # 100 ms reads
+        try:
+            from .outputs import OutputError, sounddevice_module
+            try:
+                sd = sounddevice_module()
+            except OutputError as e:
+                raise ValueError(str(e)) from None
+            dev, label = sources.portaudio_input(sd, cfg.device_name)
+            with sd.RawInputStream(samplerate=sr, channels=ch, dtype="int16", device=dev,
+                                   latency="high", blocksize=block) as stream:
+                while self.running and proc.poll() is None:
+                    data, _overflowed = stream.read(block)
+                    proc.stdin.write(bytes(data))
+        except (BrokenPipeError, OSError) as e:
+            if self.running and proc.poll() is None and not lifecycle.SHUTTING_DOWN.is_set():
+                self.log(f"Sound card: {e}", error=True)
+        except Exception as e:  # noqa: BLE001 - PortAudioError, not found, bad rate...
+            if self.running and not lifecycle.SHUTTING_DOWN.is_set():
+                self.log(f"Sound card: {e}", error=True)
         finally:
             try:
                 proc.stdin.close()
