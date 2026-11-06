@@ -300,11 +300,21 @@ function view(){
   return [end - span, end];
 }
 
+// Outputs just switched from this page: shown in their new state until the recorder reports it,
+// so a status poll still on its way doesn't flip the switch back.
+const outPending = {};
 function renderOutputs(list){
   const el = $("outs");
-  if (!list.length){ el.innerHTML = ""; return; }
+  if (!list.length){ if (el.innerHTML) el.innerHTML = ""; return; }
+  const now = Date.now();
+  list = list.map(o => {
+    const p = outPending[o.id];
+    if (!p) return o;
+    if (o.enabled === p.on || now > p.until){ delete outPending[o.id]; return o; }
+    return {...o, enabled: p.on, state: p.on ? "starting" : "off", detail: ""};
+  });
   const icon = {connected:["●","ok"], sending:["●","ok"], playing:["●","ok"], connecting:["○","warn"], waiting:["○","warn"], error:["⚠","bad"], off:["○","dim"], starting:["○","dim"]};
-  el.innerHTML = list.map(o => {
+  const html = list.map(o => {
     const [i, c] = icon[o.state] || ["○", "dim"];
     const what = {connected:"connected", sending:"sending", playing:"playing", connecting:"connecting…", waiting:"waiting for a receiver", error:o.detail, off:"off", starting:"starting"}[o.state] || o.state;
     const tip = `${o.target} · ${o.codec}` + (o.processing ? ` · ${o.processing}` : "") + (o.detail && o.state !== "error" ? ` · ${o.detail}` : "") + (o.dropped ? ` · ${o.dropped} blocks dropped (network too slow?)` : "");
@@ -313,18 +323,26 @@ function renderOutputs(list){
       + `aria-label="${esc(o.name)} on/off" title="${locked ? "Needs a web password to switch outputs from another machine" : (on ? "Switch this output off" : "Switch this output on")} (recording isn't affected)"${locked ? " disabled" : ""}></button>`;
     return `<span class="o${on ? "" : " isoff"}" title="${esc(tip)}">${sw}${esc(o.name)} <span class="${c}">${i} ${esc(what)}</span></span>`;
   }).join("");
+  // Status arrives 5 times a second: only touch the page when something changed. Rebuilding it every
+  // time replaced the switch between mouse-down and mouse-up, and the browser then drops the click.
+  if (html !== el.dataset.html){ el.innerHTML = html; el.dataset.html = html; }
 }
 // The output switches: one output on or off, straight away; the recording carries on.
 $("outs").addEventListener("click", async e => {
   const b = e.target.closest("[data-outsw]"); if (!b || b.disabled) return;
   const on = b.dataset.on !== "1";
   if (!on && !confirm(`Switch off "${b.dataset.name}"?\n\nIt stops sending straight away. The recording carries on.`)) return;
-  b.disabled = true;
+  const id = b.dataset.outsw, name = b.dataset.name;
+  outPending[id] = {on, until: Date.now() + 8000};      // show it switched straight away
+  if (st && st.outputs) renderOutputs(st.outputs);
   try {
-    await api(`/api/outputs/${encodeURIComponent(b.dataset.outsw)}`, {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({enabled: on})});
-    toast(`${b.dataset.name}: ${on ? "on" : "off"}`, "ok");
-    pollStatus();
-  } catch(err){ toast(err.message, "bad"); b.disabled = false; }
+    await api(`/api/outputs/${encodeURIComponent(id)}`, {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({enabled: on})});
+    toast(`${name}: ${on ? "on" : "off"}`, "ok");
+  } catch(err){
+    delete outPending[id];
+    if (st && st.outputs) renderOutputs(st.outputs);
+    toast(err.message, "bad");
+  }
 });
 
 // ------------------------------------------------------------ api
