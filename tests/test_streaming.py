@@ -243,6 +243,31 @@ def mount_in_use(srv, c):
     c.close()
 
 
+print("-- a stopped stream input stops listening, whenever the stop lands")
+import random  # noqa: E402
+
+
+def listening(port):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        return True
+    except OSError:
+        return False
+
+
+left = []
+for i in range(30):
+    port = free_port()
+    rx = engine(f"B_cycle{i}", source_type="receive", receive_protocol="icecast", receive_port=port,
+                receive_password="pw")
+    rx.start()
+    time.sleep(random.uniform(0, 0.4))           # sometimes mid-startup, sometimes listening
+    rx.stop()
+    if listening(port):
+        left.append(port)
+assert not left, f"still listening after stop on {len(left)} of 30 ports: {left}"
+print("   OK (30 start/stop cycles, nothing left listening)")
+
 print("-- icecast: PUT refused -> SOURCE fallback, song titles")
 srv = FakeServer(old_icecast)
 a = engine("A_oldice", source_type="custom", custom_input_args=TONE, outputs=outputs.normalize_outputs(

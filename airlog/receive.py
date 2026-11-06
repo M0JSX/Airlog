@@ -101,14 +101,18 @@ class PushServer:
             self.srv.close()
             raise OSError(f"can't listen on port {port}: {e.strerror or e}") from None
         self.srv.listen(4)
-        threading.Thread(target=self._accept_loop, name="receive-accept", daemon=True).start()
+        # accept() wakes every half second to check `closed`, and the accept thread closes the socket
+        # itself. Closing a socket from another thread while accept() blocks on it doesn't wake the
+        # accept, and the port can stay listening (answering, with this server's replies) afterwards.
+        self.srv.settimeout(0.5)
+        self.thread = threading.Thread(target=self._accept_loop, name="receive-accept", daemon=True)
+        self.thread.start()
 
     def close(self) -> None:
+        """Stop listening. Returns once the port is free (a restart may listen on it again at once)."""
         self.closed = True
-        try:
-            self.srv.close()
-        except OSError:
-            pass
+        if self.thread is not threading.current_thread():
+            self.thread.join(timeout=3)
 
     def next_sender(self, timeout: float) -> Sender | None:
         try:
@@ -117,15 +121,27 @@ class PushServer:
             return None
 
     def _accept_loop(self) -> None:
-        while not self.closed:
-            try:
-                conn, addr = self.srv.accept()
-            except OSError:
-                if self.closed:
+        try:
+            while not self.closed:
+                try:
+                    conn, addr = self.srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    if self.closed:
+                        return
+                    time.sleep(0.5)
+                    continue
+                if self.closed:                      # arrived as we were closing: not ours to answer
+                    conn.close()
                     return
-                time.sleep(0.5)
-                continue
-            threading.Thread(target=self._handshake, args=(conn, addr[0]), daemon=True).start()
+                conn.settimeout(None)
+                threading.Thread(target=self._handshake, args=(conn, addr[0]), daemon=True).start()
+        finally:
+            try:
+                self.srv.close()
+            except OSError:
+                pass
 
     def _reply(self, conn: socket.socket, status: str, text: str = "", extra: str = "") -> None:
         body = text.encode()

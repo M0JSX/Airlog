@@ -175,6 +175,8 @@ class Capture:
 
     def _wait_for_push(self):
         from .receive import PushServer
+        if not self.running:                     # stopped meanwhile: don't open a listener nobody closes
+            return None
         if self.push is None:
             try:
                 self.push = PushServer(int(self.cfg.receive_port), self.cfg.receive_password, self.log)
@@ -183,12 +185,19 @@ class Capture:
                 self.log(f"Stream input: {e}", error=True)
                 self._sleep(10)
                 return None
+            if not self.running:                 # stop() ran while it was being opened
+                self.push.close()
+                self.push = None
+                return None
         while self.running:
-            s = self.push.next_sender(timeout=0.5)
+            push = self.push
+            if push is None:                     # stop() closed it
+                return None
+            s = push.next_sender(timeout=0.5)
             if s is not None:
-                self.push.busy.set()
+                push.busy.set()
                 self.sender, self.sender_since = s.peer, time.time()
-                self.push.current_peer = s.peer
+                push.current_peer = s.peer
                 self.log(f"Stream input: receiving from {s.peer}" + (f" ({s.content_type})" if s.content_type else ""))
                 return s
         return None
