@@ -449,7 +449,8 @@ outputs** gives the internet streams something else to carry at those times,
 while the recording, grabs and the other outputs keep the programme as it aired.
 
 1. Tick **Use an alternative input** and choose what it is: a **folder of audio
-   files** played in a loop (an announcement and some music, say), an internet
+   files** played in a loop (**Browse…** picks the folder on the recorder and
+   shows the audio files in it) (an announcement and some music, say), an internet
    stream, a sound card, a received stream or custom ffmpeg input. Like the
    backup source, it runs all the time, so switching is instant.
 2. On each output, set **Feed**: *Programme* (always what's being recorded:
@@ -480,6 +481,45 @@ It's built not to leak the programme:
 **Title while switched** is sent as the song title on switched Icecast and
 Shoutcast outputs; left blank, it's the name of the file playing, or the
 station name.
+
+#### Switch page (for commentators)
+
+Set **Switch page password** (in the same settings section) and the switch is
+also at `http://<recorder>:8080/switch`: a phone-sized page with one big
+button, *Take the programme off the internet* / *Put the programme back on the
+internet* (two taps, so it isn't done by accident), plus *Follow the schedule
+again* in schedule mode. It shows what the internet stream is carrying and
+what's playing on the alternative.
+
+That password opens only this page: not the main page, settings, recordings or
+anything else. It must be at least 8 characters and different from the web
+password. Five wrong passwords from one address lock that address out for 15
+minutes; each switch is logged with the address it came from. Changing the
+password signs everyone out of the page. Someone signed in to the main page can
+use it too.
+
+**From outside the hospital.** Set **Switch page port** (e.g. 8090) and
+Airlog also serves the switch page on that port, with nothing else: not the main
+page, settings, recordings or API. Only that port needs opening to the internet,
+so the main page stays on the hospital network. It opens and moves as soon as
+you save, and closes if the switch password is cleared. There, only the switch
+password (or a main-page sign-in) works: the recorder's own "no password needed
+on this machine / trusted network" rules don't apply.
+
+Without encryption the password crosses the internet readably, so put HTTPS in
+front of that port: a reverse proxy such as [Caddy](https://caddyserver.com) on
+a machine with a domain name pointed at it
+
+```
+switch.example.org {
+    reverse_proxy 192.168.1.10:8090
+}
+```
+
+or a tunnel (Cloudflare Tunnel, Tailscale Funnel), which also avoids opening a
+port on the router. Plain port forwarding of the switch port works too, at that
+cost. Behind a proxy or tunnel all visitors share its address, so the lock-out
+applies to everyone for those 15 minutes.
 
 ### Song identification
 
@@ -623,6 +663,7 @@ The browser UI uses these; they're handy for scripting too.
 | `GET/POST /api/config` | settings (POST: signed in, local browser, or *Trusted network*) |
 | `POST /api/record {action: start\|stop}` | control (as above) |
 | `POST /api/outputs/<id> {enabled}` | switch one output on or off (as above) |
+| `GET/POST /api/switch {state}`, `POST /api/switch/login {password}` | the switch page (its own password; also on the switch page port) |
 | `POST /api/alt {state: alternative\|programme\|auto}` | what the switched outputs carry; `auto` hands back to the schedule (as above) |
 | `POST /api/login {password}` | single-use sign-in token for `GET /login?t=` (used by Airlog Viewer) |
 
@@ -665,6 +706,11 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
   alternative input stalls, or after a restart mid-match. Also the schedule
   (days, dates, past midnight, overrides), a looped folder of mixed files,
   titles and the API.
+- `python tests/test_browse.py` checks the settings folder browser: listing,
+  new folders and who may use it.
+- `python tests/test_switchpage.py` checks the switch page's password, lock-out
+  and sign-out, that its sign-in opens nothing else, and that its own port
+  serves only the switch page, moves when changed and closes when turned off.
 - `python tests/test_nowplaying.py` checks the song-change logic against canned
   Shazam answers (no network).
 

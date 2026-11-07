@@ -42,6 +42,7 @@ def serve_until(config_path: Path, wait) -> None:
     if cfg.autostart:
         holder.engine.start()
     holder.start_announcing()
+    holder.serve_switch_page()
     srv = create_server(create_app(holder), host=cfg.web_host, port=cfg.web_port, threads=12, channel_timeout=600)
     threading.Thread(target=srv.run, daemon=True, name="web").start()
     print(f"{stamp()} Service started; UI on port {cfg.web_port}", flush=True)
