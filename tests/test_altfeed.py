@@ -265,6 +265,19 @@ assert cl.post("/api/alt", json={"state": "auto"}).status_code == 400           
 assert cl.post("/api/alt", json={"state": "sideways"}).status_code == 400
 assert cl.post("/api/alt", json={"state": "programme"},
                environ_base={"REMOTE_ADDR": "192.168.1.50"}).status_code == 403
+lan = {"REMOTE_ADDR": "192.168.1.50"}
+assert cl.get("/api/status", environ_base=lan).get_json()["can_switch"] is False
+holder.cfg.lan_switch = True                       # "Network switching": the switch only, nothing else
+assert cl.get("/api/status", environ_base=lan).get_json()["can_switch"] is True
+r = cl.post("/api/alt", json={"state": "programme"}, environ_base=lan)
+assert r.status_code == 200 and r.get_json()["alt"]["on"] is False, r.get_json()
+assert "Main page (192.168.1.50): internet outputs set to the programme" in "\n".join(holder.engine.logs)
+assert cl.get("/api/switch", environ_base=lan).status_code == 200          # and /switch on this port
+assert cl.post("/api/config", json={"station_name": "x"}, environ_base=lan).status_code == 403
+assert cl.post("/api/record", json={"action": "stop"}, environ_base=lan).status_code == 403
+holder.cfg.lan_switch = False
+assert cl.post("/api/alt", json={"state": "alternative"}, environ_base=lan).status_code == 403
+assert cl.post("/api/alt", json={"state": "alternative"}).status_code == 200
 for change, why in (({"alt_schedule": [{"days": "Sat", "start": "3pm", "end": "5pm"}]}, "time like"),
                     ({"alt_mode": "schedule", "alt_schedule": []}, "at least one scheduled"),
                     ({"alt_source_type": "files", "alt_files_dir": ""}, "folder of audio files"),
@@ -277,4 +290,10 @@ assert r.status_code == 200, r.get_json()
 saved = json.loads((tmp / "config.json").read_text())
 assert saved["alt_schedule"][0]["label"] == "Match" and saved["alt_override"] == "alternative"
 holder.engine.stop()
+old = tmp / "old.json"                            # 1.6.13's default note moves to the new default
+old.write_text(json.dumps({"switch_note": "This only changes the internet stream. The hospital service and "
+                                          "the recording always carry the programme."}))
+assert Config.load(old).switch_note == "This only changes the internet stream."
+old.write_text(json.dumps({"switch_note": "Ring Dave"}))
+assert Config.load(old).switch_note == "Ring Dave"
 print("altfeed OK")

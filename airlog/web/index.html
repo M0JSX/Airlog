@@ -406,8 +406,8 @@ function renderAlt(a){
     if (Date.now() > altPending.until || override === altPending.state) altPending = null;
     else { override = altPending.state; if (a.mode === "manual") on = override === "alternative"; else if (override) on = override === "alternative"; }
   }
-  const locked = st && st.can_edit === false;
-  const dis = locked ? ` disabled title="Needs a web password to switch from another machine"` : "";
+  const locked = st && st.can_switch === false;
+  const dis = locked ? ` disabled title="Needs a web password, or Network switching turned on in Settings, to switch from another machine"` : "";
   const seg = opts => `<span class="seg" role="group" aria-label="What the internet outputs carry">` + opts.map(([v, l, isOn]) =>
     `<button data-alt="${v}" class="${isOn ? "on" : ""}${isOn && v === "alternative" ? " alt" : ""}" aria-pressed="${isOn}"${dis}>${l}</button>`).join("") + `</span>`;
   let ctl = "", note = "";
@@ -436,6 +436,8 @@ $("altbar").addEventListener("click", async e => {
   const b = e.target.closest("[data-alt]"); if (!b || b.disabled || b.classList.contains("on")) return;
   const state = b.dataset.alt;
   if (state === "programme" && !confirm("Put the programme back on the internet outputs?\n\nOnly do this once the programme can go online again (e.g. the commentary has finished).")) return;
+  if (state === "alternative" && !confirm("Take the programme off the internet outputs?\n\nThey'll carry the alternative input until switched back. The recording and the other outputs keep the programme.")) return;
+  if (state === "auto" && !confirm("Hand the internet outputs back to the schedule?\n\nThey'll carry whatever the schedule says for now.")) return;
   altPending = {state: state === "auto" ? "" : state, until: Date.now() + 8000};
   if (st) renderAlt(st.alt);
   try {
@@ -1053,6 +1055,8 @@ const FIELDS = [
   ["alt_title","Title while switched","text",null,"Sent as the song title by switched Icecast/Shoutcast outputs, e.g. <i>Normal service resumes after the match</i>. Blank = the file playing, or the station name","alt:on"],
   ["switch_password","Switch page password","password",null,`Lets commentators switch the internet outputs from <b>${location.protocol}//${location.host}/switch</b> with only this password: they can't see or change anything else. Blank = page off. At least 8 characters, different from the web password. To use it from outside, see “Switch page” in the README`,"alt:on"],
   ["switch_port","Switch page port","number",null,"e.g. 8090: the switch page alone on a port of its own (nothing else answers there), so only that port is opened to the internet. 0 = none. Takes effect when you save","alt:on"],
+  ["switch_note","Switch page note","textarea",null,"Shown under the switch page's buttons, e.g. who to call if something goes wrong. Blank = no note","alt:on"],
+  ["lan_switch","Network switching","bool",null,"Any computer on the network that can open this page may use the Programme / Alternative switch in the header, without being able to change settings or start/stop recording. Only needed when there's no web password (with one, everyone signed in can switch)","alt:on"],
   ["Hourly archive"],
   ["archive_enabled","Record archive files","bool"],
   ["archive_dir","Folder","folder"],

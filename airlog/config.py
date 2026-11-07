@@ -37,6 +37,7 @@ BACKUP_KEYS = ("source_type", "stream_url", "device_backend", "device_name", "cu
                "receive_group", "receive_sdp")
 # The alternative (internet-safe) input has its own copy of these, as alt_<name>.
 ALT_KEYS = BACKUP_KEYS + ("files_dir",)
+OLD_SWITCH_NOTE = "This only changes the internet stream. The hospital service and the recording always carry the programme."
 ALT_MODES = ("manual", "schedule", "permanent")
 
 
@@ -115,6 +116,9 @@ class Config:
     trusted_lan: bool = False         # no password: let any machine on the network change settings
     switch_password: str = ""         # the /switch page (internet outputs only); blank = page off
     switch_port: int = 0              # also serve only the switch page on this port; 0 = none
+    # Shown under the switch page's buttons; blank = nothing.
+    switch_note: str = "This only changes the internet stream."
+    lan_switch: bool = False          # any machine that can reach the main page may switch the internet outputs
     announce: bool = True             # advertise on the LAN (mDNS) so Airlog Viewer can find it
 
     # --- Backup source: runs alongside the main one and takes over if it fails ---
@@ -207,6 +211,8 @@ class Config:
                     setattr(cfg, k, v)
                 else:
                     cfg.extra[k] = v
+            if cfg.switch_note == OLD_SWITCH_NOTE:     # 1.6.14's default: follow the new one
+                cfg.switch_note = "This only changes the internet stream."
         return cfg
 
     def save(self, path: Path | None = None) -> None:
