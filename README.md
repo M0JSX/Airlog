@@ -498,27 +498,28 @@ minutes; each switch is logged with the address it came from. Changing the
 password signs everyone out of the page. Someone signed in to the main page can
 use it too.
 
-**From outside the hospital.** The recorder has to be reachable from the
-internet, and the password shouldn't cross the internet unencrypted. The tidy
-way is a reverse proxy with HTTPS in front of Airlog that passes only the switch
-page, e.g. [Caddy](https://caddyserver.com) on a machine with a domain name
-pointed at it:
+**From outside the hospital.** Set **Switch page port** (e.g. 8090) and
+Airlog also serves the switch page on that port, with nothing else: not the main
+page, settings, recordings or API. Only that port needs opening to the internet,
+so the main page stays on the hospital network. It opens and moves as soon as
+you save, and closes if the switch password is cleared. There, only the switch
+password (or a main-page sign-in) works: the recorder's own "no password needed
+on this machine / trusted network" rules don't apply.
+
+Without encryption the password crosses the internet readably, so put HTTPS in
+front of that port: a reverse proxy such as [Caddy](https://caddyserver.com) on
+a machine with a domain name pointed at it
 
 ```
 switch.example.org {
-    @switch path /switch /api/switch /api/switch/* /favicon.ico
-    handle @switch {
-        reverse_proxy 192.168.1.10:8080
-    }
-    respond 404
+    reverse_proxy 192.168.1.10:8090
 }
 ```
 
-A tunnel (Cloudflare Tunnel, Tailscale Funnel) does the same job without
-opening a port on the router. Plain port forwarding of 8080 works too, but then
-the password goes unencrypted and the whole main page is on the internet, so
-set a **web password** as well. Behind a proxy all visitors share the proxy's
-address, so the lock-out applies to everyone for those 15 minutes.
+or a tunnel (Cloudflare Tunnel, Tailscale Funnel), which also avoids opening a
+port on the router. Plain port forwarding of the switch port works too, at that
+cost. Behind a proxy or tunnel all visitors share its address, so the lock-out
+applies to everyone for those 15 minutes.
 
 ### Song identification
 
@@ -662,7 +663,7 @@ The browser UI uses these; they're handy for scripting too.
 | `GET/POST /api/config` | settings (POST: signed in, local browser, or *Trusted network*) |
 | `POST /api/record {action: start\|stop}` | control (as above) |
 | `POST /api/outputs/<id> {enabled}` | switch one output on or off (as above) |
-| `GET/POST /api/switch {state}`, `POST /api/switch/login {password}` | the switch page (its own password) |
+| `GET/POST /api/switch {state}`, `POST /api/switch/login {password}` | the switch page (its own password; also on the switch page port) |
 | `POST /api/alt {state: alternative\|programme\|auto}` | what the switched outputs carry; `auto` hands back to the schedule (as above) |
 | `POST /api/login {password}` | single-use sign-in token for `GET /login?t=` (used by Airlog Viewer) |
 
@@ -708,7 +709,8 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
 - `python tests/test_browse.py` checks the settings folder browser: listing,
   new folders and who may use it.
 - `python tests/test_switchpage.py` checks the switch page's password, lock-out
-  and sign-out, and that its sign-in opens nothing else.
+  and sign-out, that its sign-in opens nothing else, and that its own port
+  serves only the switch page, moves when changed and closes when turned off.
 - `python tests/test_nowplaying.py` checks the song-change logic against canned
   Shazam answers (no network).
 

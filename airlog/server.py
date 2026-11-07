@@ -47,7 +47,7 @@ EDITABLE = [
     "split_minutes", "archive_keep_days",
     "buffer_minutes", "spool_dir", "grabs_dir", "grab_format", "grab_pattern", "grab_preroll_s",
     "silence_alert_db", "silence_alert_s", "autostart", "web_password",
-    "identify_songs", "identify_interval_s", "announce", "trusted_lan", "switch_password",
+    "identify_songs", "identify_interval_s", "announce", "trusted_lan", "switch_password", "switch_port",
     "receive_protocol", "receive_port", "receive_latency_ms", "receive_passphrase", "receive_password",
     "receive_group", "receive_sdp", "outputs",
     "backup_enabled", "backup_source_type", "backup_stream_url", "backup_device_backend", "backup_device_name",
@@ -82,6 +82,17 @@ class Holder:
         self.engine = self._new_engine()
         self.started = time.time()
         self.advertiser: discovery.Advertiser | None = None
+        self.switch_fails: dict[str, list[float]] = {}     # switch page: address -> wrong-password times
+        self.switch_listener: SwitchListener | None = None
+
+    def serve_switch_page(self) -> None:
+        """Real servers only: the switch page's own port, if one is set (see SwitchListener)."""
+        self.switch_listener = SwitchListener(self)
+        self.switch_listener.apply()
+
+    def apply_switch_port(self) -> None:
+        if self.switch_listener is not None:
+            self.switch_listener.apply()
 
     def start_announcing(self) -> None:
         """mDNS announcement for Airlog Viewer (only for a real server, not tests/self-test)."""
@@ -110,6 +121,81 @@ class Holder:
         self.announce()             # station name / password / on-off may have changed
 
 
+class SwitchListener:
+    """The switch page on a port of its own, serving nothing else, so only that port need be opened to
+    the internet. On while a switch password and port are set; follows settings changes without a
+    restart."""
+
+    def __init__(self, holder: "Holder"):
+        self.holder = holder
+        self.srv = None
+        self.thread: threading.Thread | None = None
+        self.port = 0
+        self.error = ""
+
+    def wanted(self) -> int:
+        c = self.holder.cfg
+        return int(c.switch_port or 0) if c.switch_password else 0
+
+    def apply(self) -> None:
+        want = self.wanted()
+        if want == self.port and (want == 0 or self.srv is not None):
+            return
+        self.stop()
+        self.error = ""
+        if not want:
+            return
+        log = self.holder.engine.log
+        try:
+            from waitress import create_server
+            srv = create_server(create_switch_app(self.holder), host=self.holder.cfg.web_host, port=want,
+                                threads=4, channel_timeout=60, connection_limit=50)
+        except OSError as ex:
+            self.port, self.error = want, f"can't listen on port {want} ({ex.strerror or ex})"
+            log(f"Switch page: {self.error}", error=True)
+            return
+        self.srv, self.port = srv, want
+        self.thread = threading.Thread(target=self._run, args=(srv,), daemon=True, name=f"switch-{want}")
+        self.thread.start()
+        log(f"Switch page: listening on port {want} (it serves only the switch page)")
+
+    @staticmethod
+    def _run(srv) -> None:
+        try:
+            srv.run()
+        except Exception:                        # closed under it while stopping
+            pass
+
+    def stop(self) -> None:
+        srv, self.srv, port, self.port = self.srv, None, self.port, 0
+        if srv is None:
+            return
+        trig = getattr(srv, "trigger", None)
+        if trig is not None and hasattr(trig, "pull_trigger"):
+            # waitress: close its sockets from inside its own loop (closing them from here, under a
+            # running select(), is what logs "Bad file descriptor"); the loop ends once nothing's left.
+            smap = getattr(srv, "_map", {})
+
+            def close_all():
+                for obj in list(smap.values()):
+                    try:
+                        obj.close()
+                    except Exception:
+                        pass
+            trig.pull_trigger(close_all)
+        else:
+            srv.close()
+        if self.thread is not None:
+            self.thread.join(5)
+        td = getattr(srv, "task_dispatcher", None)
+        if td is not None:
+            try:
+                td.shutdown(cancel_pending=True, timeout=2)
+            except Exception:
+                pass
+        self.holder.engine.log(f"Switch page: stopped listening on port {port}")
+
+
 def tz_offset(t: float) -> float:
     off = dt.datetime.fromtimestamp(t).astimezone().utcoffset()
     return off.total_seconds() if off else 0.0
@@ -135,26 +221,150 @@ def safe_child(root: Path, rel: str) -> Path:
     return p
 
 
+def session_key(pw: str, label: bytes = b"airlog-session-v1") -> bytes:
+    # Changing the password invalidates every session cookie.
+    return hmac.new(pw.encode(), label, hashlib.sha256).digest()
+
+def make_session(pw: str, label: bytes = b"airlog-session-v1") -> str:
+    exp = str(int(time.time()) + SESSION_DAYS * 86400)
+    return exp + "." + hmac.new(session_key(pw, label), exp.encode(), hashlib.sha256).hexdigest()
+
+def valid_session(pw: str, value: str, label: bytes = b"airlog-session-v1") -> bool:
+    exp, _, sig = (value or "").partition(".")
+    if not exp.isdigit() or int(exp) < time.time():
+        return False
+    return hmac.compare_digest(sig, hmac.new(session_key(pw, label), exp.encode(), hashlib.sha256).hexdigest())
+
+
+def _err(msg: str, code: int = 400):
+    return jsonify(error=msg), code
+
+
+def add_switch_routes(app: Flask, holder: "Holder", fallback=lambda: False) -> None:
+    """The switch page's routes. On the main port, fallback is the main page's can_admin (so the
+    recorder itself, or a trusted network, can use it without a password); on the switch page's own
+    port there's no fallback: its password, or a main-page sign-in, only."""
+    err = _err
+
+    def switch_allowed() -> bool:
+        """The switch page's own sign-in, or anyone allowed to use the main page's switch."""
+        cfg = holder.cfg
+        if cfg.switch_password and valid_session(cfg.switch_password, request.cookies.get(SWITCH_COOKIE, ""),
+                                                 b"airlog-switch-v1"):
+            return True
+        if cfg.web_password:
+            return valid_session(cfg.web_password, request.cookies.get(SESSION_COOKIE, ""))
+        return fallback()
+
+    def switch_view() -> dict:
+        cfg = holder.cfg
+        return {"station": cfg.station_name, "signed_in": True, "alt": holder.engine.alt_status()}
+
+    def apply_alt_state(state: str, who: str):
+        """Shared by the main page's button and the switch page. Returns an error response or None."""
+        cfg = holder.cfg
+        if not cfg.alt_enabled:
+            return err("The alternative input isn't enabled (Settings)")
+        state = "" if state == "auto" else state
+        if state not in altfeed.OVERRIDES:
+            return err("state must be alternative, programme or auto")
+        if state == "" and cfg.alt_mode != "schedule":
+            return err("'Follow the schedule' needs schedule mode")
+        if cfg.alt_mode == "permanent":
+            return err("In permanent mode the switched outputs always carry the alternative")
+        with holder.lock:
+            if who:
+                holder.engine.log(f"{who}: internet outputs set to "
+                                  + {"alternative": "the alternative input", "programme": "the programme",
+                                     "": "follow the schedule"}[state])
+            holder.engine.set_alt_override(state)
+            cfg.save(holder.cfg_path)
+        return None
+
+    app.extensions["airlog_apply_alt"] = apply_alt_state
+
+    @app.get("/switch")
+    def switch_page():
+        resp = send_from_directory(WEB_DIR, "switch.html")
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+    @app.get("/api/switch")
+    def switch_status():
+        if not switch_allowed():
+            return jsonify(signed_in=False, available=bool(holder.cfg.switch_password)), 401
+        return jsonify(switch_view())
+
+    @app.post("/api/switch/login")
+    def switch_login():
+        cfg = holder.cfg
+        ip = request.remote_addr or "?"
+        if not cfg.switch_password:
+            return err("The switch page isn't turned on. Set a switch page password in Airlog's settings", 403)
+        now = time.monotonic()
+        fails = [t for t in holder.switch_fails.get(ip, []) if now - t < SWITCH_FAIL_WINDOW_S]
+        holder.switch_fails[ip] = fails
+        if len(fails) >= SWITCH_MAX_FAILS:
+            mins = max(1, round((SWITCH_FAIL_WINDOW_S - (now - fails[0])) / 60))
+            return err(f"Too many wrong passwords. Try again in {mins} minute{'s' if mins > 1 else ''}", 429)
+        given = str((request.get_json(silent=True) or {}).get("password", ""))
+        if not hmac.compare_digest(given.encode(), cfg.switch_password.encode()):
+            fails.append(now)
+            if len(fails) >= SWITCH_MAX_FAILS:
+                holder.engine.log(f"Switch page: {len(fails)} wrong passwords from {ip}; "
+                                  f"locked out for {SWITCH_FAIL_WINDOW_S // 60} minutes", error=True)
+            time.sleep(1)                        # slow down guessing
+            return err("Wrong password", 403)
+        holder.switch_fails.pop(ip, None)
+        resp = jsonify(switch_view())
+        resp.set_cookie(SWITCH_COOKIE, make_session(cfg.switch_password, b"airlog-switch-v1"),
+                        max_age=SESSION_DAYS * 86400, httponly=True, samesite="Strict", path="/",
+                        secure=request.is_secure)
+        return resp
+
+    @app.post("/api/switch/logout")
+    def switch_logout():
+        resp = jsonify(ok=True)
+        resp.delete_cookie(SWITCH_COOKIE, path="/")
+        return resp
+
+    @app.post("/api/switch")
+    def switch_set():
+        if not switch_allowed():
+            return err("Signed out: enter the switch page password again", 401)
+        bad = apply_alt_state(str((request.get_json(silent=True) or {}).get("state", "")),
+                              f"Switch page ({request.remote_addr})")
+        return bad or jsonify(switch_view())
+
+
+def create_switch_app(holder: Holder) -> Flask:
+    """The switch page's own port: the page, its API and the icon. Nothing else answers."""
+    app = Flask(__name__, static_folder=None)
+    add_switch_routes(app, holder)
+
+    @app.get("/")
+    def root():
+        return Response(status=302, headers={"Location": "/switch"})
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return send_from_directory(Path(__file__).with_name("assets"), "icon.png", mimetype="image/png")
+
+    @app.after_request
+    def headers(resp):
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        return resp
+    return app
+
+
 def create_app(holder: Holder) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config["JSON_SORT_KEYS"] = False
 
     # ---------------------------------------------------------------- auth
     login_tokens: dict[str, float] = {}          # one-time token -> expiry (monotonic)
-
-    def session_key(pw: str, label: bytes = b"airlog-session-v1") -> bytes:
-        # Changing the password invalidates every session cookie.
-        return hmac.new(pw.encode(), label, hashlib.sha256).digest()
-
-    def make_session(pw: str, label: bytes = b"airlog-session-v1") -> str:
-        exp = str(int(time.time()) + SESSION_DAYS * 86400)
-        return exp + "." + hmac.new(session_key(pw, label), exp.encode(), hashlib.sha256).hexdigest()
-
-    def valid_session(pw: str, value: str, label: bytes = b"airlog-session-v1") -> bool:
-        exp, _, sig = (value or "").partition(".")
-        if not exp.isdigit() or int(exp) < time.time():
-            return False
-        return hmac.compare_digest(sig, hmac.new(session_key(pw, label), exp.encode(), hashlib.sha256).hexdigest())
 
     @app.before_request
     def check_auth():
@@ -237,96 +447,7 @@ def create_app(holder: Holder) -> Flask:
                             httponly=True, samesite="Strict", path="/")
         return resp
 
-    # ---------------------------------------------------------------- the /switch page
-    switch_fails: dict[str, list[float]] = {}    # address -> times of wrong passwords
-
-    def switch_allowed() -> bool:
-        """The switch page's own sign-in, or anyone allowed to use the main page's switch."""
-        cfg = holder.cfg
-        if cfg.switch_password and valid_session(cfg.switch_password, request.cookies.get(SWITCH_COOKIE, ""),
-                                                 b"airlog-switch-v1"):
-            return True
-        if cfg.web_password:
-            return valid_session(cfg.web_password, request.cookies.get(SESSION_COOKIE, ""))
-        return can_admin()
-
-    def switch_view() -> dict:
-        cfg = holder.cfg
-        return {"station": cfg.station_name, "signed_in": True, "alt": holder.engine.alt_status()}
-
-    def apply_alt_state(state: str, who: str):
-        """Shared by the main page's button and the switch page. Returns an error response or None."""
-        cfg = holder.cfg
-        if not cfg.alt_enabled:
-            return err("The alternative input isn't enabled (Settings)")
-        state = "" if state == "auto" else state
-        if state not in altfeed.OVERRIDES:
-            return err("state must be alternative, programme or auto")
-        if state == "" and cfg.alt_mode != "schedule":
-            return err("'Follow the schedule' needs schedule mode")
-        if cfg.alt_mode == "permanent":
-            return err("In permanent mode the switched outputs always carry the alternative")
-        with holder.lock:
-            if who:
-                holder.engine.log(f"{who}: internet outputs set to "
-                                  + {"alternative": "the alternative input", "programme": "the programme",
-                                     "": "follow the schedule"}[state])
-            holder.engine.set_alt_override(state)
-            cfg.save(holder.cfg_path)
-        return None
-
-    @app.get("/switch")
-    def switch_page():
-        resp = send_from_directory(WEB_DIR, "switch.html")
-        resp.headers["Cache-Control"] = "no-cache"
-        return resp
-
-    @app.get("/api/switch")
-    def switch_status():
-        if not switch_allowed():
-            return jsonify(signed_in=False, available=bool(holder.cfg.switch_password)), 401
-        return jsonify(switch_view())
-
-    @app.post("/api/switch/login")
-    def switch_login():
-        cfg = holder.cfg
-        ip = request.remote_addr or "?"
-        if not cfg.switch_password:
-            return err("The switch page isn't turned on. Set a switch page password in Airlog's settings", 403)
-        now = time.monotonic()
-        fails = [t for t in switch_fails.get(ip, []) if now - t < SWITCH_FAIL_WINDOW_S]
-        switch_fails[ip] = fails
-        if len(fails) >= SWITCH_MAX_FAILS:
-            mins = max(1, round((SWITCH_FAIL_WINDOW_S - (now - fails[0])) / 60))
-            return err(f"Too many wrong passwords. Try again in {mins} minute{'s' if mins > 1 else ''}", 429)
-        given = str((request.get_json(silent=True) or {}).get("password", ""))
-        if not hmac.compare_digest(given.encode(), cfg.switch_password.encode()):
-            fails.append(now)
-            if len(fails) >= SWITCH_MAX_FAILS:
-                holder.engine.log(f"Switch page: {len(fails)} wrong passwords from {ip}; "
-                                  f"locked out for {SWITCH_FAIL_WINDOW_S // 60} minutes", error=True)
-            time.sleep(1)                        # slow down guessing
-            return err("Wrong password", 403)
-        switch_fails.pop(ip, None)
-        resp = jsonify(switch_view())
-        resp.set_cookie(SWITCH_COOKIE, make_session(cfg.switch_password, b"airlog-switch-v1"),
-                        max_age=SESSION_DAYS * 86400, httponly=True, samesite="Strict", path="/",
-                        secure=request.is_secure)
-        return resp
-
-    @app.post("/api/switch/logout")
-    def switch_logout():
-        resp = jsonify(ok=True)
-        resp.delete_cookie(SWITCH_COOKIE, path="/")
-        return resp
-
-    @app.post("/api/switch")
-    def switch_set():
-        if not switch_allowed():
-            return err("Signed out: enter the switch page password again", 401)
-        bad = apply_alt_state(str((request.get_json(silent=True) or {}).get("state", "")),
-                              f"Switch page ({request.remote_addr})")
-        return bad or jsonify(switch_view())
+    add_switch_routes(app, holder, fallback=can_admin)
 
     # ---------------------------------------------------------------- pages
     @app.get("/")
@@ -615,6 +736,20 @@ def create_app(holder: Holder) -> Flask:
                            "it can be tried from the internet")
             if trial.switch_password == trial.web_password:
                 return err("The switch page password must be different from the web password")
+        sp = int(trial.switch_port or 0)
+        if sp:
+            if not 1024 <= sp <= 65535:
+                return err("The switch page port must be 1024-65535, or 0 for none")
+            if sp == int(trial.web_port):
+                return err(f"The switch page port can't be the main page's port ({sp})")
+            taken = [("main source", trial.source_type, trial.receive_port)]
+            if trial.backup_enabled:
+                taken.append(("backup source", trial.backup_source_type, trial.backup_receive_port))
+            if trial.alt_enabled:
+                taken.append(("alternative input", trial.alt_source_type, trial.alt_receive_port))
+            for name, t, port in taken:
+                if t == "receive" and int(port) == sp:
+                    return err(f"The switch page port is the {name}'s receive port ({sp})")
         if trial.source_type == "receive":
             try:
                 sources.receive_args(trial)
@@ -663,7 +798,11 @@ def create_app(holder: Holder) -> Flask:
             setattr(cfg, k, v)
         cfg.save(holder.cfg_path)
         was = holder.engine.running
-        threading.Thread(target=holder.restart, args=(was or cfg.autostart,), daemon=True).start()
+
+        def restart():
+            holder.restart(was or cfg.autostart)
+            holder.apply_switch_port()
+        threading.Thread(target=restart, daemon=True).start()
         return jsonify(ok=True)
 
     @app.post("/api/alt")
@@ -672,7 +811,7 @@ def create_app(holder: Holder) -> Flask:
         so a restart keeps it; applied at once, without restarting the recorder."""
         if not can_admin():
             return err(ADMIN_REFUSED, 403)
-        bad = apply_alt_state(str((request.get_json(silent=True) or {}).get("state", "")), "")
+        bad = app.extensions["airlog_apply_alt"](str((request.get_json(silent=True) or {}).get("state", "")), "")
         return bad or jsonify(ok=True, alt=holder.engine.alt_status())
 
     # ---------------------------------------------------------------- folder browser (settings)
@@ -809,6 +948,7 @@ def main() -> None:
     if cfg.autostart:
         holder.engine.start()
     holder.start_announcing()
+    holder.serve_switch_page()
     app = create_app(holder)
     print(f"Airlog {__version__} — open http://{host if host != '0.0.0.0' else '<this-machine>'}:{port}/", flush=True)
     try:
@@ -823,6 +963,8 @@ def main() -> None:
         lifecycle.begin_shutdown()
         if holder.advertiser:
             holder.advertiser.close()
+        if holder.switch_listener:
+            holder.switch_listener.stop()
         holder.engine.stop()
 
 

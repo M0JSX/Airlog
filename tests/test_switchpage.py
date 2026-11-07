@@ -113,5 +113,93 @@ comm.post("/api/switch/login", json={"password": "new-season-2027"})
 r = comm.get("/api/switch")
 assert r.status_code == 200 and r.get_json()["alt"] is None
 assert comm.post("/api/switch", json={"state": "alternative"}).status_code == 400
+
+print("-- its own port: serves only the switch page")
+import http.cookiejar  # noqa: E402
+import socket  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+
+def free_port():
+    with socket.socket() as so:
+        so.bind(("127.0.0.1", 0))
+        return so.getsockname()[1]
+
+
+def opener():
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+
+def get(op, port, path, body=None):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method="POST" if body is not None else "GET",
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"content-type": "application/json"})
+    try:
+        with op.open(req, timeout=5) as r:
+            return r.status, r.read(), r.geturl()
+    except urllib.error.HTTPError as ex:
+        return ex.code, ex.read(), ""
+
+
+def refused(port):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        return False
+    except OSError:
+        return True
+
+
+def settle(pred, secs=8):
+    end = time.time() + secs
+    while time.time() < end and not pred():
+        time.sleep(0.1)
+    return pred()
+
+
+for change, why in (({"switch_port": holder.cfg.web_port}, "main page's port"), ({"switch_port": 80}, "1024-65535")):
+    r = admin.post("/api/config", json=change)
+    assert r.status_code == 400 and why in r.get_json()["error"], r.get_json()
+holder.cfg.web_host = "127.0.0.1"
+holder.serve_switch_page()                      # what the service does at start-up (nothing set yet)
+assert holder.switch_listener.srv is None
+p1 = free_port()
+assert admin.post("/api/config", json={"switch_port": p1, "alt_enabled": True}).status_code == 200
+assert settle(lambda: not refused(p1)), "switch port never opened"
+op = opener()
+st, body, url = get(op, p1, "/")
+assert st == 200 and url.endswith("/switch") and b"Internet switch" in body, (st, url)
+for path in ("/api/status", "/api/config", "/api/log", "/api/browse", "/login", "/api/alt"):
+    assert get(op, p1, path)[0] == 404, path
+assert get(op, p1, "/api/switch")[0] == 401          # no fallback on its own port, even from the recorder
+assert get(op, p1, "/api/switch/login", {"password": "nope-nope"})[0] == 403
+st, body, _ = get(op, p1, "/api/switch/login", {"password": "new-season-2027"})
+assert st == 200, body
+st, body, _ = get(op, p1, "/api/switch", {"state": "alternative"})
+assert st == 200 and json.loads(body)["alt"]["on"] is True, body
+assert get(op, p1, "/api/config")[0] == 404           # signed in: still nothing else
+assert "Switch page: listening on port" in "\n".join(holder.engine.logs)
+
+print("-- changing the port moves it (repeatedly), clearing the password closes it")
+t = time.time()
+for i in range(8):
+    p2 = free_port()
+    assert admin.post("/api/config", json={"switch_port": p2}).status_code == 200
+    assert settle(lambda: not refused(p2) and refused(p1)), f"cycle {i}: {p1} -> {p2}"
+    assert get(opener(), p2, "/switch")[0] == 200
+    p1 = p2
+print(f"   8 port changes in {time.time() - t:.1f}s; each old port closed, each new one answering")
+assert admin.post("/api/config", json={"switch_password": ""}).status_code == 200
+assert settle(lambda: refused(p1)), "still listening with no switch password"
+
+print("-- a port that's in use is reported, not fatal")
+busy = socket.socket()
+busy.bind(("127.0.0.1", 0))
+busy.listen()
+bp = busy.getsockname()[1]
+assert admin.post("/api/config", json={"switch_password": "new-season-2027", "switch_port": bp}).status_code == 200
+assert settle(lambda: f"can't listen on port {bp}" in "\n".join(holder.engine.logs)), list(holder.engine.logs)[-5:]
+busy.close()
+holder.switch_listener.stop()
 holder.engine.stop()
 print("switch page OK")

@@ -1052,6 +1052,7 @@ const FIELDS = [
   ["alt_custom_input_args","ffmpeg input args","text",null,null,"alt:custom"],
   ["alt_title","Title while switched","text",null,"Sent as the song title by switched Icecast/Shoutcast outputs, e.g. <i>Normal service resumes after the match</i>. Blank = the file playing, or the station name","alt:on"],
   ["switch_password","Switch page password","password",null,`Lets commentators switch the internet outputs from <b>${location.protocol}//${location.host}/switch</b> with only this password: they can't see or change anything else. Blank = page off. At least 8 characters, different from the web password. To use it from outside, see “Switch page” in the README`,"alt:on"],
+  ["switch_port","Switch page port","number",null,"e.g. 8090: the switch page alone on a port of its own (nothing else answers there), so only that port is opened to the internet. 0 = none. Takes effect when you save","alt:on"],
   ["Hourly archive"],
   ["archive_enabled","Record archive files","bool"],
   ["archive_dir","Folder","folder"],
