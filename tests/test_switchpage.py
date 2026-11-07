@@ -74,7 +74,7 @@ print("-- signed in: switch, and nothing else")
 comm = client("81.2.69.161")
 r = comm.post("/api/switch/login", json={"password": "kick-off-1530"})
 assert r.status_code == 200 and r.get_json()["station"] == "Hospital Radio Reading", r.get_json()
-assert r.get_json()["note"].startswith("This only changes the internet stream")      # the default
+assert r.get_json()["note"] == "This only changes the internet stream."      # the default
 assert admin.post("/api/config", json={"switch_note": "Problems? Ring the studio on 0118 000 0000"}).status_code == 200
 assert comm.get("/api/switch").get_json()["note"] == "Problems? Ring the studio on 0118 000 0000"
 assert admin.post("/api/config", json={"switch_note": "x" * 601}).status_code == 400

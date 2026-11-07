@@ -476,7 +476,13 @@ It's built not to leak the programme:
   connected); they never fall back to the programme.
 - The choice is saved, so after a restart or a power cut mid-match the
   switched outputs carry the alternative from the first second.
-- Switching back to the programme from the button asks for confirmation.
+- The header button asks for confirmation both ways.
+
+**Network switching** lets any computer on the network that can open the main
+page use the header switch, without being able to change settings or start and
+stop recording. It's only needed when there's no web password; with one,
+everyone signed in can switch. Each switch from another machine is logged with
+its address.
 
 **Title while switched** is sent as the song title on switched Icecast and
 Shoutcast outputs; left blank, it's the name of the file playing, or the
@@ -490,8 +496,8 @@ button, *Take the programme off the internet* / *Put the programme back on the
 internet*, each taking two taps so neither happens by accident, plus *Follow
 the schedule again* in schedule mode. It shows what the internet stream is
 carrying and what's playing on the alternative. **Switch page note** sets the
-text under the buttons (e.g. who to ring if something goes wrong); blank for
-none.
+text under the buttons (default *This only changes the internet stream.*;
+e.g. add who to ring if something goes wrong); blank for none.
 
 That password opens only this page: not the main page, settings, recordings or
 anything else. It must be at least 8 characters and different from the web

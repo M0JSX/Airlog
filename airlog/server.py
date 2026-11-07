@@ -47,7 +47,7 @@ EDITABLE = [
     "split_minutes", "archive_keep_days",
     "buffer_minutes", "spool_dir", "grabs_dir", "grab_format", "grab_pattern", "grab_preroll_s",
     "silence_alert_db", "silence_alert_s", "autostart", "web_password",
-    "identify_songs", "identify_interval_s", "announce", "trusted_lan", "switch_password", "switch_port", "switch_note",
+    "identify_songs", "identify_interval_s", "announce", "trusted_lan", "switch_password", "switch_port", "switch_note", "lan_switch",
     "receive_protocol", "receive_port", "receive_latency_ms", "receive_passphrase", "receive_password",
     "receive_group", "receive_sdp", "outputs",
     "backup_enabled", "backup_source_type", "backup_stream_url", "backup_device_backend", "backup_device_name",
@@ -448,7 +448,12 @@ def create_app(holder: Holder) -> Flask:
                             httponly=True, samesite="Strict", path="/")
         return resp
 
-    add_switch_routes(app, holder, fallback=can_admin)
+    def can_switch() -> bool:
+        """The internet switch on the main page: whoever may change settings, or, with "Network
+        switching" on, any machine that can reach the main page."""
+        return can_admin() or holder.cfg.lan_switch
+
+    add_switch_routes(app, holder, fallback=can_switch)
 
     # ---------------------------------------------------------------- pages
     @app.get("/")
@@ -497,6 +502,7 @@ def create_app(holder: Holder) -> Flask:
             now_playing=asdict(cur) if (cur := e.tracks.current()) else None,
             tracks_rev=e.tracks.rev,
             can_edit=can_admin(),
+            can_switch=can_switch(),
             outputs=e.outputs.status(),
             failover=e.failover_status(),
             alt=e.alt_status(),
@@ -812,9 +818,11 @@ def create_app(holder: Holder) -> Flask:
     def alt_switch():
         """The main page's internet switch: {"state": "alternative" | "programme" | "auto"}. Saved,
         so a restart keeps it; applied at once, without restarting the recorder."""
-        if not can_admin():
-            return err(ADMIN_REFUSED, 403)
-        bad = app.extensions["airlog_apply_alt"](str((request.get_json(silent=True) or {}).get("state", "")), "")
+        if not can_switch():
+            return err("Switching the internet outputs from another machine needs a web password, or "
+                       "\"Network switching\" turned on (Settings → Alternative input)", 403)
+        who = "" if is_local_request() else f"Main page ({request.remote_addr})"
+        bad = app.extensions["airlog_apply_alt"](str((request.get_json(silent=True) or {}).get("state", "")), who)
         return bad or jsonify(ok=True, alt=holder.engine.alt_status())
 
     # ---------------------------------------------------------------- folder browser (settings)
