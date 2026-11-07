@@ -80,6 +80,9 @@ DEFAULTS = {
     # Icecast / Shoutcast
     "mount": "/live", "user": "source", "password": "", "stream_name": "", "genre": "", "description": "",
     "url": "", "public": False, "send_titles": True,
+    # What this output carries: "programme" (always what's recorded) or "switch" (the alternative input
+    # instead, while the alternative is switched on: e.g. internet streams during football commentary)
+    "feed": "programme",
     # SRT
     "mode": "caller", "latency_ms": 200, "passphrase": "",
     # UDP / RTP multicast
@@ -162,11 +165,13 @@ def normalize_outputs(raw, previous: list | None = None) -> list[dict]:
                       "comp_makeup_db", "mb_bass_db", "mb_lowmid_db", "mb_presence_db", "mb_air_db", "mb_drive_db"):
                 o[k] = float(o[k])
             for k in ("name", "kind", "codec", "host", "mount", "user", "password", "stream_name", "genre",
-                      "description", "url", "mode", "passphrase", "processing", "device"):
+                      "description", "url", "mode", "passphrase", "processing", "device", "feed"):
                 o[k] = str(o[k]).strip() if k not in SECRETS else str(o[k])
         except (TypeError, ValueError):
             raise ValueError(f"Output {i + 1}: a number field isn't a number") from None
         label = o["name"] or f"Output {i + 1}"
+        if o["feed"] not in ("programme", "switch"):
+            o["feed"] = "programme"
         if o["kind"] not in KINDS:
             raise ValueError(f"{label}: unknown type {o['kind']!r}")
         if o["codec"] not in CODECS[o["kind"]]:
@@ -380,7 +385,7 @@ class Output:
             except OSError:
                 pass
         return {"id": o["id"], "name": o["name"], "kind": o["kind"], "codec": o["codec"], "underruns": self.underruns,
-                "enabled": bool(o["enabled"]),
+                "enabled": bool(o["enabled"]), "feed": o["feed"], "on_alt": self.on_alt(),
                 "processing": describe_processing(o),
                 "target": describe(o), "state": self.state, "detail": self.detail, "since": self.since,
                 "sent": self.sent, "dropped": self.dropped, "sdp": self.sdp}
@@ -697,11 +702,23 @@ class Output:
             raise OutputError("encoder failed: " + (errs[-1] if errs else f"exit {proc.returncode}"))
         return True
 
+    def switches(self) -> bool:
+        return self.o["feed"] == "switch"
+
+    def on_alt(self) -> bool:
+        """Carrying the alternative input right now."""
+        return self.switches() and self.engine.outputs.alt_on
+
+    def title_now(self) -> str:
+        if self.on_alt():
+            return self.engine.alt_title()
+        cur = self.engine.tracks.current()
+        return f"{cur.artist} - {cur.title}" if cur else (self.o["stream_name"] or self.engine.cfg.station_name)
+
     def _maybe_send_title(self) -> None:
         if self.o["codec"] not in ("mp3", "aac"):
             return                        # Ogg streams carry their own tags; servers ignore updinfo for them
-        cur = self.engine.tracks.current()
-        title = f"{cur.artist} - {cur.title}" if cur else (self.o["stream_name"] or self.engine.cfg.station_name)
+        title = self.title_now()
         if title == self._title_sent:
             return
         self._title_sent = title
@@ -955,8 +972,10 @@ class OutputSet:
         self.items = [Output(engine, s) for s in specs]
         self.active = [o for o in self.items if o.o["enabled"]]
         self._lock = threading.Lock()
-        self._last_feed = time.monotonic()
+        self._last_feed = time.monotonic()           # programme audio
+        self._last_feed_alt = time.monotonic()       # alternative input audio
         self._keepalive_on = False
+        self.alt_on = False                          # switched outputs carry the alternative input
 
     def set_enabled(self, oid: str, on: bool) -> None:
         """Turn one output on or off while recording carries on (the main page's switches)."""
@@ -995,43 +1014,74 @@ class OutputSet:
             o.stop()
 
     def feed(self, pcm: bytes) -> None:
+        """Programme audio: to every output, except switched ones while the alternative is on."""
         self._last_feed = time.monotonic()
+        alt = self.alt_on
         for o in self.active:
-            o.feed(pcm)
+            if not (alt and o.switches()):
+                o.feed(pcm)
+
+    def feed_alt(self, pcm: bytes) -> None:
+        """Alternative input audio: only to switched outputs, and only while the alternative is on."""
+        self._last_feed_alt = time.monotonic()
+        if not self.alt_on:
+            return
+        for o in self.active:
+            if o.switches():
+                o.feed(pcm)
+
+    def set_alt(self, on: bool) -> None:
+        """Switch the switched outputs between the programme and the alternative. Audio already queued
+        for them is dropped, so not even a fraction of a second of the old feed goes out after this."""
+        if on == self.alt_on:
+            return
+        self.alt_on = on
+        for o in self.items:
+            if o.switches():
+                o._drain()
 
     # ------------------------------------------------------------------ keepalive
     def _keepalive(self) -> None:
-        """While the source gives no audio (a stalled stream, a reconnect, startup), send the outputs
+        """While an output's feed gives no audio (a stalled stream, a reconnect, startup), send it
         silence in real time, as a broadcast encoder does. A streaming server whose source sends
         nothing drops it ("Timeout waiting for stream data"): Shoutcast DNAS 2.6 did after 6-7 s of a
-        stalled source. Listeners get cut off and everything has to reconnect. With silence they hear a gap, then the programme carries on."""
+        stalled source. Listeners get cut off and everything has to reconnect. With silence they hear
+        a gap, then the programme carries on. Programme and alternative-input outputs are watched
+        separately: a failed alternative input means silence on those outputs, never the programme."""
         e = self.engine
-        silent_since = None            # monotonic: when the outputs started getting silence
-        announced = False
-        sent_until = 0.0
+        state = {"prog": {"since": None, "told": False, "until": 0.0},
+                 "alt": {"since": None, "told": False, "until": 0.0}}
+        words = {"prog": ("the source", "outputs"), "alt": ("the alternative input", "internet outputs")}
         while self._keepalive_on:
             time.sleep(KEEPALIVE_TICK_S)
             now = time.monotonic()
-            if now - self._last_feed < KEEPALIVE_AFTER_S:
-                if announced and silent_since is not None:
-                    e.log(f"Source audio back: outputs resume after {now - silent_since:.0f}s of silence")
-                silent_since, announced = None, False
-                continue
-            if not self.active or lifecycle.SHUTTING_DOWN.is_set():
-                continue
-            if silent_since is None:
-                silent_since = sent_until = self._last_feed + KEEPALIVE_AFTER_S
-            if not announced and now - silent_since >= KEEPALIVE_ANNOUNCE_S:
-                e.log("No audio from the source: outputs are sending silence to stay connected")
-                announced = True
-            secs = min(now - sent_until, 1.0)    # never more than a second at once, even after a hiccup
-            frames = int(secs * e.sr)
-            if frames <= 0:
-                continue
-            sent_until += frames / e.sr
-            block = bytes(frames * e.bpf)
-            for o in self.active:
-                o.feed(block)
+            alt = self.alt_on
+            groups = {"prog": [o for o in self.active if not (alt and o.switches())],
+                      "alt": [o for o in self.active if alt and o.switches()]}
+            for route, targets in groups.items():
+                st = state[route]
+                last = self._last_feed if route == "prog" else self._last_feed_alt
+                src, outs = words[route]
+                if now - last < KEEPALIVE_AFTER_S or not targets:
+                    if st["told"] and st["since"] is not None and targets:
+                        e.log(f"Audio from {src} back: {outs} resume after {now - st['since']:.0f}s of silence")
+                    st["since"], st["told"] = None, False
+                    continue
+                if lifecycle.SHUTTING_DOWN.is_set():
+                    continue
+                if st["since"] is None:
+                    st["since"] = st["until"] = max(last + KEEPALIVE_AFTER_S, now - KEEPALIVE_TICK_S)
+                if not st["told"] and now - st["since"] >= KEEPALIVE_ANNOUNCE_S:
+                    e.log(f"No audio from {src}: {outs} are sending silence to stay connected")
+                    st["told"] = True
+                secs = min(now - st["until"], 1.0)    # never more than a second at once, even after a hiccup
+                frames = int(secs * e.sr)
+                if frames <= 0:
+                    continue
+                st["until"] += frames / e.sr
+                block = bytes(frames * e.bpf)
+                for o in targets:
+                    o.feed(block)
 
     def status(self) -> list[dict]:
         return [o.status() for o in self.items]

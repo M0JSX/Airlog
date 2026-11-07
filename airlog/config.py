@@ -35,6 +35,9 @@ def default_data_dir() -> Path:
 BACKUP_KEYS = ("source_type", "stream_url", "device_backend", "device_name", "custom_input_args", "source_delay_s",
                "receive_protocol", "receive_port", "receive_latency_ms", "receive_passphrase", "receive_password",
                "receive_group", "receive_sdp")
+# The alternative (internet-safe) input has its own copy of these, as alt_<name>.
+ALT_KEYS = BACKUP_KEYS + ("files_dir",)
+ALT_MODES = ("manual", "schedule", "permanent")
 
 
 @dataclass
@@ -47,7 +50,9 @@ class Config:
     # "device"  : sound card input (dshow / avfoundation / pulse / alsa)
     # "custom"  : raw ffmpeg input arguments, for anything else
     # "receive" : a stream sent *to* Airlog (SRT listener, UDP, RTP or an Icecast-style push)
+    # "files"   : a folder of audio files played in a loop (used for the alternative input)
     source_type: str = "stream"
+    files_dir: str = ""
     stream_url: str = ""
     device_backend: str = ""          # blank = platform default
     device_name: str = ""             # e.g. 'Line In (USB Audio CODEC)', ':0', 'default', 'hw:1,0'
@@ -129,6 +134,30 @@ class Config:
     failover_silence_s: int = 60      # main silent this long while the backup isn't -> backup (0 = off)
     failover_return_s: int = 30       # main healthy again for this long -> switch back
 
+    # --- Alternative input for internet outputs (e.g. football commentary that can't go online) ---
+    # Outputs whose feed is "switch" carry this instead of the programme while it's switched on;
+    # the recording, archive and grabs always keep the programme.
+    alt_enabled: bool = False
+    alt_mode: str = "manual"          # manual (button) | schedule (times, with override) | permanent
+    alt_override: str = ""            # "" | "programme" | "alternative": the button's state, kept across restarts
+    alt_title: str = ""               # now-playing text on switched outputs (blank: the file playing / station)
+    alt_schedule: list = field(default_factory=list)   # [{"days": "Sat Sun", "date": "", "start": "14:55",
+                                                         #   "end": "17:10", "label": "..."}]
+    alt_source_type: str = "files"
+    alt_stream_url: str = ""
+    alt_device_backend: str = ""
+    alt_device_name: str = ""
+    alt_custom_input_args: str = ""
+    alt_source_delay_s: float = 0.0
+    alt_receive_protocol: str = "srt"
+    alt_receive_port: int = 9002
+    alt_receive_latency_ms: int = 200
+    alt_receive_passphrase: str = ""
+    alt_receive_password: str = ""
+    alt_receive_group: str = ""
+    alt_receive_sdp: str = ""
+    alt_files_dir: str = ""
+
     # --- Encoder outputs: send what's recorded on to Icecast / Shoutcast / SRT / UDP / RTP ---
     outputs: list = field(default_factory=list)
 
@@ -142,6 +171,14 @@ class Config:
         for k in BACKUP_KEYS:
             setattr(c, k, getattr(self, "backup_" + k))
         c.extra = dict(self.extra, _role="backup")
+        return c
+
+    def alt_config(self) -> "Config":
+        """The settings the alternative input's capture runs with."""
+        c = copy.copy(self)
+        for k in ALT_KEYS:
+            setattr(c, k, getattr(self, "alt_" + k))
+        c.extra = dict(self.extra, _role="alt")
         return c
 
     def effective_spool_dir(self) -> Path:

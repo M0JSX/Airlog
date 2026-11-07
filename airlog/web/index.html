@@ -91,6 +91,22 @@ footer{display:flex;justify-content:space-between;color:var(--dim);font-size:12p
 .sw.on::after{left:14px;background:#fff}
 .sw:disabled{cursor:default;opacity:.5}
 .sw:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.altbar{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px}
+.altbar.alt-on .altstate{color:var(--amber);font-weight:700}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{border:0;border-radius:0;padding:2px 9px;font-size:12px;background:transparent;color:var(--dim)}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--panel2);color:var(--fg);font-weight:700}
+.seg button.on.alt{background:var(--amber);color:#000}
+.seg button:disabled{cursor:default;opacity:.6}
+.alttag{color:var(--amber);font-size:11px;font-weight:700;border:1px solid var(--amber);border-radius:3px;padding:0 3px}
+.sched{display:flex;flex-direction:column;gap:6px}
+.frow.wide{grid-template-columns:1fr}
+.frow.wide .hint{grid-column:1}
+.schedrow{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) 8.5em 8.5em 2.2em;gap:6px;align-items:center}
+.schedrow input{width:100%;min-width:0;box-sizing:border-box}
+.schedhead{text-align:left;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+@media (max-width:640px){.schedrow{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 2.2em}.schedrow [data-s=start]{grid-column:1}.schedhead{display:none}}
 .outcard{border:1px solid var(--line);border-radius:8px;padding:6px 12px 10px;margin:10px 0;background:var(--panel)}
 .outcard .ohead{display:flex;align-items:center;gap:8px;margin:4px 0 2px}
 .outcard .ohead input[type=text]{flex:1;font-weight:600}
@@ -118,6 +134,7 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
     <div class="st"><span id="dot" class="dot"></span><span id="stxt">CONNECTING</span><span id="station" class="station"></span></div>
     <div class="sub" id="source"></div>
     <div class="sub" id="file"></div>
+    <div class="sub altbar" id="altbar"></div>
     <div class="sub outs" id="outs"></div>
   </div>
   <div class="np" id="np" title="Identified by Shazam">
@@ -321,7 +338,8 @@ function renderOutputs(list){
     const on = o.enabled !== false, locked = st && st.can_edit === false;
     const sw = `<button class="sw${on ? " on" : ""}" data-outsw="${esc(o.id)}" data-on="${on ? 1 : 0}" data-name="${esc(o.name)}" role="switch" aria-checked="${on}" `
       + `aria-label="${esc(o.name)} on/off" title="${locked ? "Needs a web password to switch outputs from another machine" : (on ? "Switch this output off" : "Switch this output on")} (recording isn't affected)"${locked ? " disabled" : ""}></button>`;
-    return `<span class="o${on ? "" : " isoff"}" title="${esc(tip)}">${sw}${esc(o.name)} <span class="${c}">${i} ${esc(what)}</span></span>`;
+    const alt = o.on_alt ? ` <span class="alttag" title="Carrying the alternative input, not the programme">ALT</span>` : "";
+    return `<span class="o${on ? "" : " isoff"}" title="${esc(tip)}">${sw}${esc(o.name)}${alt} <span class="${c}">${i} ${esc(what)}</span></span>`;
   }).join("");
   // Status arrives 5 times a second: only touch the page when something changed. Rebuilding it every
   // time replaced the switch between mouse-down and mouse-up, and the browser then drops the click.
@@ -341,6 +359,66 @@ $("outs").addEventListener("click", async e => {
   } catch(err){
     delete outPending[id];
     if (st && st.outputs) renderOutputs(st.outputs);
+    toast(err.message, "bad");
+  }
+});
+
+// The alternative input: what the switched internet outputs carry (e.g. no football commentary online).
+let altPending = null;          // {state, until}: shown until the recorder reports it
+function altTime(iso){ return new Date(iso).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}); }
+function altWhen(iso){
+  const d = new Date(iso), now = new Date();
+  const t = altTime(iso);
+  if (d.toDateString() === now.toDateString()) return t;
+  const days = (d - now) / 864e5;
+  return (days < 6 ? d.toLocaleDateString([], {weekday:"short"}) : d.toLocaleDateString([], {weekday:"short", day:"numeric", month:"short"})) + " " + t;
+}
+function renderAlt(a){
+  const el = $("altbar");
+  if (!a){ if (el.innerHTML) { el.innerHTML = ""; el.dataset.html = ""; el.className = "sub altbar"; } return; }
+  let override = a.override || "", on = a.on;
+  if (altPending){
+    if (Date.now() > altPending.until || override === altPending.state) altPending = null;
+    else { override = altPending.state; if (a.mode === "manual") on = override === "alternative"; else if (override) on = override === "alternative"; }
+  }
+  const locked = st && st.can_edit === false;
+  const dis = locked ? ` disabled title="Needs a web password to switch from another machine"` : "";
+  const seg = opts => `<span class="seg" role="group" aria-label="What the internet outputs carry">` + opts.map(([v, l, isOn]) =>
+    `<button data-alt="${v}" class="${isOn ? "on" : ""}${isOn && v === "alternative" ? " alt" : ""}" aria-pressed="${isOn}"${dis}>${l}</button>`).join("") + `</span>`;
+  let ctl = "", note = "";
+  if (a.mode === "permanent"){
+    note = "always the alternative input";
+  } else if (a.mode === "schedule"){
+    ctl = seg([["auto", "Schedule", !override], ["programme", "Programme", override === "programme"], ["alternative", "Alternative", override === "alternative"]]);
+    if (override) note = "held by hand until set back to Schedule";
+    else if (a.until) note = `until ${altWhen(a.until.at)}` + (a.until.label ? ` (${esc(a.until.label)})` : "");
+    if (!on && a.next) note += (note ? " · " : "") + `next: ${a.next.label ? esc(a.next.label) + " " : ""}${altWhen(a.next.start)}–${altTime(a.next.end)}`;
+  } else {
+    ctl = seg([["programme", "Programme", !on], ["alternative", "Alternative", on]]);
+  }
+  const inp = a.input || {};
+  let src = "";
+  if (on){
+    const bad = inp.status && inp.status !== "recording";
+    src = `<span class="${bad ? "bad" : "dim"}">` + (bad ? `⚠ alternative input ${esc(inp.status)}: sending silence` : esc(inp.playing ? "playing " + inp.playing : inp.source || "")) + `</span>`;
+  }
+  const html = `<span>Internet outputs:</span> <span class="altstate">${on ? "ALTERNATIVE INPUT" : "programme"}</span>${ctl}` +
+    (note ? `<span class="dim">${note}</span>` : "") + src;
+  el.className = "sub altbar" + (on ? " alt-on" : "");
+  if (html !== el.dataset.html){ el.innerHTML = html; el.dataset.html = html; }
+}
+$("altbar").addEventListener("click", async e => {
+  const b = e.target.closest("[data-alt]"); if (!b || b.disabled || b.classList.contains("on")) return;
+  const state = b.dataset.alt;
+  if (state === "programme" && !confirm("Put the programme back on the internet outputs?\n\nOnly do this once the programme can go online again (e.g. the commentary has finished).")) return;
+  altPending = {state: state === "auto" ? "" : state, until: Date.now() + 8000};
+  if (st) renderAlt(st.alt);
+  try {
+    const r = await api("/api/alt", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({state})});
+    if (st) { st.alt = r.alt; renderAlt(st.alt); }
+    toast(`Internet outputs: ${r.alt.on ? "alternative input" : "programme"}`, "ok");
+  } catch(err){
+    altPending = null; if (st) renderAlt(st.alt);
     toast(err.message, "bad");
   }
 });
@@ -418,6 +496,7 @@ function renderStatus(){
   }
   $("source").textContent = src;
   $("source").className = "sub" + (onBackup ? " warn" : "");
+  renderAlt(s.alt);
   renderOutputs(s.outputs || []);
   if (s.archive){
     const lt = live() ?? s.server_time;
@@ -929,6 +1008,24 @@ const FIELDS = [
   ["failover_after_s","Switch after no audio for (s)","number",null,"How long the main source can drop out before the backup takes over","backup:on"],
   ["failover_silence_s","…or silence for (s)","number",null,"Main source below the silence level this long, while the backup isn't silent. 0 = don't switch on silence","backup:on"],
   ["failover_return_s","Switch back after (s)","number",null,"How long the main source must be healthy again before switching back","backup:on"],
+  ["Alternative input for internet outputs"],
+  ["alt_enabled","Use an alternative input","bool",null,"For programmes that mustn't go online (e.g. football commentary): outputs set to <b>Feed: Switches to the alternative</b> carry this instead. The recording, grabs and other outputs always keep the programme","alt:"],
+  ["alt_mode","Switching","select",[["manual","Button on the main page"],["schedule","Schedule (the button can override it)"],["permanent","Always: switched outputs never carry the programme"]],null,"alt:on"],
+  ["alt_schedule","Schedule","schedule",null,"Days (e.g. <i>Sat</i> or <i>Tue Wed</i>) or a date (2026-11-14). An end before the start runs past midnight. Times are the recorder's clock","alt:sched"],
+  ["alt_source_type","Alternative","select",[["files","Folder of audio files (played in a loop)"],["stream","Internet stream"],["device","Sound card input"],["receive","Receive a stream (SRT / UDP / RTP / Icecast push)"],["custom","Custom ffmpeg input"]],null,"alt:on"],
+  ["alt_files_dir","Folder","text",null,"A folder on the recorder. MP3, WAV, FLAC, Ogg, Opus, M4A/AAC…, played in file-name order and looped. Files added later are picked up on the next loop","alt:files"],
+  ["alt_stream_url","Stream URL","text",null,"e.g. a sustaining service or another of your streams","alt:stream"],
+  ["alt_device_backend","Driver","select","backends",null,"alt:device"],
+  ["alt_device_name","Input","text",null,"e.g. plughw:2,0 (press Refresh on the main Input to see the names)","alt:device"],
+  ["alt_receive_protocol","Receive","select",[["srt","SRT"],["icecast","Icecast push"],["udp","MPEG-TS over UDP"],["rtp","RTP"]],null,"alt:receive"],
+  ["alt_receive_port","Port","number",null,"Must differ from the main and backup sources' ports","alt:receive"],
+  ["alt_receive_passphrase","SRT passphrase","password",null,"Optional, 10–79 characters","alt:receive","srt"],
+  ["alt_receive_latency_ms","SRT latency (ms)","number",null,null,"alt:receive","srt"],
+  ["alt_receive_password","Source password","password",null,"Senders use it as their Icecast source password","alt:receive","icecast"],
+  ["alt_receive_group","Multicast group","text",null,"Blank for unicast","alt:receive","udp rtp"],
+  ["alt_receive_sdp","SDP from the sender","textarea",null,"For RTP with PCM, Opus or AAC","alt:receive","rtp"],
+  ["alt_custom_input_args","ffmpeg input args","text",null,null,"alt:custom"],
+  ["alt_title","Title while switched","text",null,"Sent as the song title by switched Icecast/Shoutcast outputs, e.g. <i>Normal service resumes after the match</i>. Blank = the file playing, or the station name","alt:on"],
   ["Hourly archive"],
   ["archive_enabled","Record archive files","bool"],
   ["archive_dir","Folder","text"],
@@ -979,6 +1076,7 @@ const OUT_FIELDS = [
   ["public","List in public directories","bool","icecast shoutcast",""],
   ["send_titles","Send song titles","bool","icecast shoutcast","From song identification (MP3/AAC streams)"],
   ["ttl","Multicast TTL","number","udp rtp","Only matters for multicast addresses"],
+  ["feed","Feed","select:programme=Programme (what's being recorded),switch=Switches to the alternative input","icecast shoutcast srt udp rtp device","Switched outputs carry the alternative input while it's on (e.g. your internet streams); keep the STL / FM feed on Programme","alt"],
   ["processing","Processing","select:off=Off,limiter=Limiter only,gentle=Gentle (evens out levels),broadcast=Broadcast (denser radio sound),heavy=Heavy (loud and dense),custom=Custom compressor,mb_smooth=Multiband – Smooth,mb_punchy=Multiband – Punchy,mb_loud=Multiband – Loud","icecast shoutcast srt udp rtp device","Compressor + limiter for this output only; the recording and grabs stay as they aired. Multiband keeps a loud bass line from pulling the rest down"],
   ["ceiling_db","Limiter ceiling (dBFS)","number","icecast shoutcast srt udp rtp device","Peaks never go above this; -1 suits most streams","proc"],
   ["comp_threshold_db","Threshold (dBFS)","number","icecast shoutcast srt udp rtp device","Compression starts above this level","custom"],
@@ -1021,7 +1119,7 @@ function renderOutputEditor(r){
                   processing: "off", ceiling_db: -1, comp_threshold_db: -20, comp_ratio: 4, comp_attack_ms: 10,
                   comp_release_ms: 200, comp_makeup_db: 6,
                   mb_drive_db: 0, mb_bass_db: 0, mb_lowmid_db: 0, mb_presence_db: 0, mb_air_db: 0,
-                  device: "", buffer_ms: 200});
+                  device: "", buffer_ms: 200, feed: "programme"});
     drawOutCards();
   });
   drawOutCards();
@@ -1039,6 +1137,7 @@ function drawOutCards(){
       if (when === "proc" && proc === "off") return false;
       if (when === "custom" && proc !== "custom") return false;
       if (when === "mb" && !proc.startsWith("mb_")) return false;
+      if (when === "alt" && !altEnabledInForm()) return false;
       if (o.kind === "device" && (k === "codec" || k === "bitrate_kbps" || k === "port")) return false;
       if (k === "bitrate_kbps" && o.codec === "pcm") return false;
       return ks.includes(o.kind);
@@ -1078,6 +1177,27 @@ function drawOutCards(){
   });
   if (cfgCache && !cfgCache.can_edit) box.querySelectorAll("input,select,button").forEach(x => x.disabled = true);
 }
+function altEnabledInForm(){
+  const c = $("f_alt_enabled");
+  return c ? c.checked : !!(cfgCache && cfgCache.config.alt_enabled);
+}
+// Schedule editor for the alternative input: one row per window.
+function schedRow(e){
+  const when = e.date || e.days || "";
+  return `<div class="schedrow">
+    <input type="text" data-s="label" placeholder="Label, e.g. Reading v Bolton" value="${esc(e.label || "")}">
+    <input type="text" data-s="when" placeholder="Sat  or  2026-11-14" value="${esc(when)}">
+    <input type="time" data-s="start" value="${esc(e.start || "")}" aria-label="Start">
+    <input type="time" data-s="end" value="${esc(e.end || "")}" aria-label="End">
+    <button class="small" data-sdel title="Remove">✕</button></div>`;
+}
+function collectSchedule(){
+  return [...document.querySelectorAll("#f_alt_schedule .schedrow")].map(r => {
+    const g = k => r.querySelector(`[data-s="${k}"]`).value.trim();
+    const when = g("when"), isDate = /^\d{4}-\d{2}-\d{2}$/.test(when);
+    return {label: g("label"), date: isDate ? when : "", days: isDate ? "" : when, start: g("start"), end: g("end")};
+  }).filter(e => e.label || e.date || e.days || e.start || e.end);
+}
 function collectOutputs(){
   document.querySelectorAll("#outcards .outcard").forEach(card => {
     const o = outList[+card.dataset.i];
@@ -1098,15 +1218,18 @@ async function openSettings(){
     if (type === "bool") input = `<input type="checkbox" id="f_${k}" ${v ? "checked" : ""}>`;
     else if (type === "select"){
       const o = opts === "backends" ? r.backends.map(b => [b, b]) : opts;
-      input = `<select id="f_${k}">` + o.map(([val, l]) => `<option value="${val}" ${String(val) === String(v || ((k==="device_backend" || k==="backup_device_backend")?r.default_backend:"")) ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
+      input = `<select id="f_${k}">` + o.map(([val, l]) => `<option value="${val}" ${String(val) === String(v || ((k==="device_backend" || k==="backup_device_backend" || k==="alt_device_backend")?r.default_backend:"")) ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
     } else if (type === "device"){
       input = `<div style="display:flex;gap:6px"><input type="text" list="devlist" id="f_${k}" value="${esc(String(v ?? ""))}" style="flex:1"><button class="small" id="devrefresh">Refresh</button></div><datalist id="devlist"></datalist>`;
     } else if (type === "kbps"){
       input = `<select id="f_${k}">${bitrateOptions(opts, v)}</select>`;
+    } else if (type === "schedule"){
+      input = `<div><div class="schedrow schedhead"><span>Label</span><span>Days or date</span><span>Start</span><span>End</span><span></span></div>` +
+        `<div class="sched" id="f_${k}">${(v || []).map(schedRow).join("")}</div><button class="small" id="schedadd" style="margin-top:6px">+ Add a time</button></div>`;
     } else if (type === "textarea"){
       input = `<textarea id="f_${k}" spellcheck="false">${esc(String(v ?? ""))}</textarea>`;
     } else input = `<input type="${type === "number" ? "number" : type}" step="any" id="f_${k}" value="${esc(String(v ?? ""))}">`;
-    f.insertAdjacentHTML("beforeend", `<div class="frow" data-only="${only || ""}" data-proto="${fd[6] || ""}"><label for="f_${k}">${label}</label>${input}${hint ? `<div class="hint">${hint}</div>` : ""}</div>`);
+    f.insertAdjacentHTML("beforeend", `<div class="frow${type === "schedule" ? " wide" : ""}" data-only="${only || ""}" data-proto="${fd[6] || ""}"><label for="f_${k}">${label}</label>${input}${hint ? `<div class="hint">${hint}</div>` : ""}</div>`);
   }
   f.insertAdjacentHTML("beforeend", `<div class="dim" style="font-size:12px;margin-top:10px">${r.ffmpeg ? "ffmpeg " + r.ffmpeg + " found on the recorder" : "<span class='bad'>ffmpeg not found on the recorder</span>"}</div>`);
   if (!r.can_edit){
@@ -1130,6 +1253,23 @@ async function openSettings(){
     if ([9000, 5004, 8000].includes(+port.value) && def) port.value = def;
     syncSource();
   };
+  $("f_alt_enabled").onchange = () => { collectOutputs(); drawOutCards(); syncSource(); };
+  $("f_alt_mode").onchange = syncSource;
+  $("f_alt_source_type").onchange = syncSource;
+  $("f_alt_receive_protocol").onchange = () => {
+    const def = {srt:9002, udp:5008, rtp:5008, icecast:8002}[$("f_alt_receive_protocol").value];
+    const port = $("f_alt_receive_port");
+    if ([9002, 5008, 8002].includes(+port.value) && def) port.value = def;
+    syncSource();
+  };
+  $("schedadd").onclick = e => {
+    e.preventDefault();
+    $("f_alt_schedule").insertAdjacentHTML("beforeend", schedRow({days: "Sat", start: "14:55", end: "17:10"}));
+  };
+  $("f_alt_schedule").addEventListener("click", e => {
+    const b = e.target.closest("[data-sdel]"); if (b){ e.preventDefault(); b.closest(".schedrow").remove(); }
+  });
+  if (!r.can_edit) f.querySelectorAll("input,select,button").forEach(x => x.disabled = true);
   $("f_device_backend").onchange = refreshDevices;
   $("devrefresh").onclick = e => { e.preventDefault(); refreshDevices(); };
   syncSource();
@@ -1141,6 +1281,10 @@ function syncSource(){
   const bOn = $("f_backup_enabled") && $("f_backup_enabled").checked;
   const bt = $("f_backup_source_type") ? $("f_backup_source_type").value : "";
   const bproto = $("f_backup_receive_protocol") ? $("f_backup_receive_protocol").value : "";
+  const aOn = $("f_alt_enabled") && $("f_alt_enabled").checked;
+  const at = $("f_alt_source_type") ? $("f_alt_source_type").value : "";
+  const amode = $("f_alt_mode") ? $("f_alt_mode").value : "";
+  const aproto = $("f_alt_receive_protocol") ? $("f_alt_receive_protocol").value : "";
   document.querySelectorAll("#form > .frow[data-only]").forEach(r => {
     const only = r.dataset.only;
     let show;
@@ -1148,6 +1292,10 @@ function syncSource(){
       const want = only.slice(7);
       show = want === "" || (bOn && (want === "on" || want === bt));
       if (show && r.dataset.proto) show = r.dataset.proto.split(" ").includes(bproto);
+    } else if (only.startsWith("alt:")){
+      const want = only.slice(4);
+      show = want === "" || (aOn && (want === "on" || want === at || (want === "sched" && amode === "schedule")));
+      if (show && r.dataset.proto) show = r.dataset.proto.split(" ").includes(aproto);
     } else {
       show = (!only || only === t) && (!r.dataset.proto || r.dataset.proto.split(" ").includes(proto));
     }
@@ -1167,7 +1315,7 @@ async function saveSettings(){
   for (const fd of FIELDS){
     if (fd.length === 1) continue;
     const [k, , type] = fd; const el = $("f_" + k); if (!el) continue;
-    out[k] = type === "bool" ? el.checked : el.value;
+    out[k] = type === "bool" ? el.checked : type === "schedule" ? collectSchedule() : el.value;
   }
   out.outputs = collectOutputs();
   try {

@@ -28,8 +28,9 @@ class Capture:
     def __init__(self, engine: "Engine", cfg: Config, role: str):
         self.engine = engine
         self.cfg = cfg
-        self.role = role                      # "main" | "backup"
-        self.prefix = "" if role == "main" else "Backup source: "
+        self.role = role                      # "main" | "backup" | "alt"
+        self.prefix = {"main": "", "backup": "Backup source: ", "alt": "Alternative input: "}.get(role, "")
+        self.playing = ""                     # "files" source: the file being played
         self.status = "stopped"               # stopped | starting | recording | reconnecting | waiting | error
         self.delay = float(cfg.source_delay_s or 0)
         self.receiving = cfg.source_type == "receive"
@@ -128,10 +129,10 @@ class Capture:
                         cmd[i - 1:i - 1] = ["-f", hint]
             else:
                 self.log("Source: " + self.describe())
-            card = sources.via_portaudio(self.cfg)          # Linux ALSA: Airlog reads the card itself
+            feed = sources.feeder(self.cfg)       # audio Airlog produces itself: a sound card, or files
             try:
                 self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                             stdin=subprocess.PIPE if sender or card else subprocess.DEVNULL,
+                                             stdin=subprocess.PIPE if sender or feed else subprocess.DEVNULL,
                                              creationflags=NO_WINDOW)
             except OSError as e:
                 self.status = "error"
@@ -143,8 +144,9 @@ class Capture:
             threading.Thread(target=self._pump_stderr, args=(self.proc,), daemon=True).start()
             if sender:
                 threading.Thread(target=self._feed_push, args=(sender, self.proc), daemon=True).start()
-            if card:
-                threading.Thread(target=self._feed_card, args=(self.proc,), daemon=True).start()
+            if feed:
+                target = self._feed_card if feed == "card" else self._feed_files
+                threading.Thread(target=target, args=(self.proc,), daemon=True).start()
             self.last_data = time.monotonic()
             got_any = self._read_loop(self.proc)
             if self.proc.poll() is None:
@@ -243,6 +245,66 @@ class Capture:
             if self.running and not lifecycle.SHUTTING_DOWN.is_set():
                 self.log(f"Sound card: {e}", error=True)
         finally:
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+    def _feed_files(self, proc: subprocess.Popen) -> None:
+        """A folder of audio files -> ffmpeg's stdin, in a loop, in real time. Each file is decoded on
+        its own, so the folder can mix formats and sample rates. The folder is re-read on each pass,
+        so files added or removed take effect next time round."""
+        cfg = self.cfg
+        sr, ch = int(cfg.sample_rate), int(cfg.channels)
+        bpf = 2 * ch
+        block = sr // 10 * bpf                                # 100 ms
+        start = time.monotonic()
+        sent = 0                                              # frames, for real-time pacing
+        warned = False
+        try:
+            while self.running and proc.poll() is None:
+                files = sources.audio_files(cfg.files_dir)
+                if not files:
+                    if not warned:
+                        self.log(f"no audio files in {cfg.files_dir or '(no folder chosen)'}", error=True)
+                        warned = True
+                    return                                    # ends ffmpeg's input: retried with back-off
+                warned = False
+                pass_any = False
+                for f in files:
+                    if not self.running or proc.poll() is not None:
+                        return
+                    dec = subprocess.Popen([cfg.ffmpeg_path, "-hide_banner", "-nostdin", "-v", "error", "-i", str(f),
+                                            "-vn", "-ac", str(ch), "-ar", str(sr), "-f", "s16le", "pipe:1"],
+                                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+                    self.playing = f.stem
+                    got_any = False
+                    try:
+                        while self.running and proc.poll() is None:
+                            data = dec.stdout.read(block)
+                            if not data:
+                                break
+                            got_any = True
+                            proc.stdin.write(data)
+                            sent += len(data) // bpf
+                            ahead = start + sent / sr - time.monotonic()
+                            if ahead > 0.2:                   # stay ~0.2 s ahead of real time
+                                time.sleep(ahead - 0.2)
+                            elif ahead < -2:                  # fell behind (a stall): don't race to catch up
+                                start = time.monotonic() - sent / sr
+                    finally:
+                        if dec.poll() is None:
+                            dec.kill()
+                        dec.wait()
+                    pass_any = pass_any or got_any
+                    if not got_any:
+                        self.log(f"couldn't play {f.name} (not audio, or damaged); skipping", error=True)
+                if not pass_any:
+                    return                                    # nothing playable: retried with back-off
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        finally:
+            self.playing = ""
             try:
                 proc.stdin.close()
             except (OSError, ValueError):

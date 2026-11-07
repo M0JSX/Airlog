@@ -25,9 +25,9 @@ from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory, stream_with_context
 
-from . import __version__, discovery, outputs, sources
+from . import __version__, altfeed, discovery, outputs, sources
 from . import lifecycle
-from .config import Config
+from .config import ALT_MODES, Config
 from .engine import Engine
 
 WEB_DIR = Path(__file__).with_name("web")
@@ -36,6 +36,11 @@ AUDIO_EXT = {".mp3", ".flac", ".wav", ".ogg"}
 # Settings the browser may edit (everything else stays file-only). ffmpeg_path is deliberately
 # file-only: whoever can set it can run any program on the recorder.
 EDITABLE = [
+    "files_dir",
+    "alt_enabled", "alt_mode", "alt_title", "alt_schedule", "alt_source_type", "alt_stream_url",
+    "alt_device_backend", "alt_device_name", "alt_custom_input_args", "alt_source_delay_s",
+    "alt_receive_protocol", "alt_receive_port", "alt_receive_latency_ms", "alt_receive_passphrase",
+    "alt_receive_password", "alt_receive_group", "alt_receive_sdp", "alt_files_dir",
     "station_name", "source_type", "stream_url", "device_backend", "device_name", "custom_input_args",
     "source_delay_s", "sample_rate", "channels",
     "archive_enabled", "archive_dir", "archive_pattern", "archive_format", "archive_bitrate_kbps",
@@ -51,7 +56,8 @@ EDITABLE = [
     "backup_receive_sdp", "failover_after_s", "failover_silence_s", "failover_return_s",
 ]
 SECRET_FIELDS = ("web_password", "receive_password", "receive_passphrase",
-                 "backup_receive_password", "backup_receive_passphrase")   # never sent back to browsers
+                 "backup_receive_password", "backup_receive_passphrase",
+                 "alt_receive_password", "alt_receive_passphrase")   # never sent back to browsers
 
 SESSION_COOKIE = "airlog_session"
 SESSION_DAYS = 30
@@ -270,6 +276,7 @@ def create_app(holder: Holder) -> Flask:
             can_edit=can_admin(),
             outputs=e.outputs.status(),
             failover=e.failover_status(),
+            alt=e.alt_status(),
             receive={"protocol": cfg.receive_protocol, "port": cfg.receive_port, "sender": e.sender,
                      "since": e.sender_since} if cfg.source_type == "receive" else None,
         )
@@ -478,6 +485,12 @@ def create_app(holder: Holder) -> Flask:
                 except ValueError as ex:
                     return err(str(ex))
                 continue
+            if k == "alt_schedule":
+                try:
+                    new[k] = altfeed.normalize_schedule(v)
+                except ValueError as ex:
+                    return err(str(ex))
+                continue
             cur = getattr(cfg, k)
             try:
                 if isinstance(cur, bool):
@@ -514,12 +527,59 @@ def create_app(holder: Holder) -> Flask:
             if (trial.source_type == "receive" and b.source_type == "receive"
                     and int(trial.receive_port) == int(b.receive_port)):
                 return err("The main and backup sources can't receive on the same port")
+        if trial.alt_enabled:
+            if trial.alt_mode not in ALT_MODES:
+                return err("Alternative input: unknown switching mode")
+            a = trial.alt_config()
+            try:
+                if a.source_type == "receive":
+                    sources.receive_args(a)
+                elif a.source_type == "stream" and not a.stream_url.strip():
+                    raise ValueError("enter the stream URL")
+                elif a.source_type == "custom" and "-i" not in a.custom_input_args:
+                    raise ValueError("custom input arguments must contain -i")
+                elif a.source_type == "files" and not a.files_dir.strip():
+                    raise ValueError("choose the folder of audio files")
+            except ValueError as ex:
+                return err(f"Alternative input: {ex}")
+            ports = [("main", trial.source_type, trial.receive_port), ("alternative", a.source_type, a.receive_port)]
+            if trial.backup_enabled:
+                ports.append(("backup", trial.backup_source_type, trial.backup_receive_port))
+            used = [(n, int(p)) for n, t, p in ports if t == "receive"]
+            for i, (n1, p1) in enumerate(used):
+                for n2, p2 in used[i + 1:]:
+                    if p1 == p2:
+                        return err(f"The {n1} and {n2} inputs can't receive on the same port ({p1})")
+            if trial.alt_mode == "schedule" and not trial.alt_schedule:
+                return err("Alternative input: add at least one scheduled time, or use the manual button")
         for k, v in new.items():
             setattr(cfg, k, v)
         cfg.save(holder.cfg_path)
         was = holder.engine.running
         threading.Thread(target=holder.restart, args=(was or cfg.autostart,), daemon=True).start()
         return jsonify(ok=True)
+
+    @app.post("/api/alt")
+    def alt_switch():
+        """The main page's internet switch: {"state": "alternative" | "programme" | "auto"}. Saved,
+        so a restart keeps it; applied at once, without restarting the recorder."""
+        if not can_admin():
+            return err(ADMIN_REFUSED, 403)
+        cfg = holder.cfg
+        if not cfg.alt_enabled:
+            return err("The alternative input isn't enabled (Settings)")
+        state = str((request.get_json(silent=True) or {}).get("state", ""))
+        state = "" if state == "auto" else state
+        if state not in altfeed.OVERRIDES:
+            return err("state must be alternative, programme or auto")
+        if state == "" and cfg.alt_mode != "schedule":
+            return err("'Follow the schedule' needs schedule mode")
+        if cfg.alt_mode == "permanent":
+            return err("In permanent mode the switched outputs always carry the alternative")
+        with holder.lock:
+            holder.engine.set_alt_override(state)
+            cfg.save(holder.cfg_path)
+        return jsonify(ok=True, alt=holder.engine.alt_status())
 
     @app.get("/api/output_devices")
     def output_devices():
