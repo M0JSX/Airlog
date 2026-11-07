@@ -487,9 +487,11 @@ station name.
 Set **Switch page password** (in the same settings section) and the switch is
 also at `http://<recorder>:8080/switch`: a phone-sized page with one big
 button, *Take the programme off the internet* / *Put the programme back on the
-internet* (two taps, so it isn't done by accident), plus *Follow the schedule
-again* in schedule mode. It shows what the internet stream is carrying and
-what's playing on the alternative.
+internet*, each taking two taps so neither happens by accident, plus *Follow
+the schedule again* in schedule mode. It shows what the internet stream is
+carrying and what's playing on the alternative. **Switch page note** sets the
+text under the buttons (e.g. who to ring if something goes wrong); blank for
+none.
 
 That password opens only this page: not the main page, settings, recordings or
 anything else. It must be at least 8 characters and different from the web

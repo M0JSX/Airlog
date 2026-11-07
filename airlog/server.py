@@ -47,7 +47,7 @@ EDITABLE = [
     "split_minutes", "archive_keep_days",
     "buffer_minutes", "spool_dir", "grabs_dir", "grab_format", "grab_pattern", "grab_preroll_s",
     "silence_alert_db", "silence_alert_s", "autostart", "web_password",
-    "identify_songs", "identify_interval_s", "announce", "trusted_lan", "switch_password", "switch_port",
+    "identify_songs", "identify_interval_s", "announce", "trusted_lan", "switch_password", "switch_port", "switch_note",
     "receive_protocol", "receive_port", "receive_latency_ms", "receive_passphrase", "receive_password",
     "receive_group", "receive_sdp", "outputs",
     "backup_enabled", "backup_source_type", "backup_stream_url", "backup_device_backend", "backup_device_name",
@@ -258,7 +258,8 @@ def add_switch_routes(app: Flask, holder: "Holder", fallback=lambda: False) -> N
 
     def switch_view() -> dict:
         cfg = holder.cfg
-        return {"station": cfg.station_name, "signed_in": True, "alt": holder.engine.alt_status()}
+        return {"station": cfg.station_name, "signed_in": True, "alt": holder.engine.alt_status(),
+                "note": cfg.switch_note}
 
     def apply_alt_state(state: str, who: str):
         """Shared by the main page's button and the switch page. Returns an error response or None."""
@@ -736,6 +737,8 @@ def create_app(holder: Holder) -> Flask:
                            "it can be tried from the internet")
             if trial.switch_password == trial.web_password:
                 return err("The switch page password must be different from the web password")
+        if len(trial.switch_note) > 600:
+            return err("The switch page note is too long (600 characters at most)")
         sp = int(trial.switch_port or 0)
         if sp:
             if not 1024 <= sp <= 65535:

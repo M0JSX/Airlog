@@ -115,6 +115,8 @@ class Config:
     trusted_lan: bool = False         # no password: let any machine on the network change settings
     switch_password: str = ""         # the /switch page (internet outputs only); blank = page off
     switch_port: int = 0              # also serve only the switch page on this port; 0 = none
+    # Shown under the switch page's buttons; blank = nothing.
+    switch_note: str = "This only changes the internet stream. The hospital service and the recording always carry the programme."
     announce: bool = True             # advertise on the LAN (mDNS) so Airlog Viewer can find it
 
     # --- Backup source: runs alongside the main one and takes over if it fails ---

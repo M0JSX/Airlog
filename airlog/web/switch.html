@@ -29,7 +29,7 @@ button{font:inherit;font-weight:700;width:100%;border-radius:12px;border:0;paddi
 button.alt{background:var(--amber)}
 button.alt:hover{background:var(--amber2)}
 button.prog{background:var(--panel2);color:var(--fg);border:1px solid var(--line)}
-button.prog.armed{background:var(--red);color:#fff;border-color:var(--red)}
+button.armed{background:var(--red)!important;color:#fff!important;border-color:var(--red)!important}
 button.sched{background:var(--panel2);color:var(--fg);border:1px solid var(--line);font-weight:600}
 button:disabled{opacity:.55;cursor:default}
 form{background:var(--panel);border-radius:12px;padding:18px}
@@ -38,7 +38,8 @@ input{font:inherit;width:100%;color:var(--fg);background:var(--panel2);border:1p
 form button{background:var(--amber);min-height:52px;padding:12px}
 .msg{min-height:1.4em;font-size:14px;margin:8px 0 0}
 .msg.bad{color:var(--red)} .msg.ok{color:var(--green)}
-.foot{color:var(--dim);font-size:13px;margin-top:18px}
+.foot{color:var(--dim);font-size:13px;margin-top:18px;white-space:pre-line;overflow-wrap:anywhere}
+.foot:empty{display:none}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -70,12 +71,17 @@ form button{background:var(--amber);min-height:52px;padding:12px}
     <button class="prog" id="b-prog" data-state="programme">Put the programme back on the internet</button>
     <button class="sched" id="b-sched" data-state="auto">Follow the schedule again</button>
     <div class="msg" id="msg" role="alert"></div>
-    <p class="foot">This only changes the internet stream. The hospital service and the recording always carry the programme.</p>
+    <p class="foot" id="note"></p>
   </section>
 </main>
 <script>
 const $ = id => document.getElementById(id);
-let view = null, busy = false, armed = null;
+let view = null, busy = false, armed = null, armTimer = 0;
+// Both switches take two taps, so neither happens by a stray touch.
+const LABELS = {
+  alternative: ["Take the programme off the internet", "Tap again: take the programme off the internet"],
+  programme: ["Put the programme back on the internet", "Tap again: commentary over, programme back online"],
+};
 
 function time(iso){ return new Date(iso).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 function when(iso){
@@ -110,6 +116,7 @@ function render(){
     if (!on && a.next) d += ` Next: ${a.next.label ? a.next.label + ", " : ""}${when(a.next.start)}–${time(a.next.end)}.`;
   }
   $("detail").textContent = d;
+  $("note").textContent = view.note || "";
   const bad = on && inp.status && inp.status !== "recording";
   $("input").textContent = bad ? "⚠ The alternative input isn't working, so the internet stream is sending silence."
     : on && inp.playing ? `Playing: ${inp.playing}` : "";
@@ -119,12 +126,17 @@ function render(){
   $("b-prog").hidden = fixed || !on;
   $("b-sched").hidden = a.mode !== "schedule" || !a.override;
   for (const b of document.querySelectorAll("#panel button")) b.disabled = busy;
-  if (armed !== "programme") disarm();
+  // Armed, but that button's gone (switched from elsewhere): start again.
+  if (armed && document.querySelector(`#panel [data-state="${armed}"]`).hidden) disarm();
 }
 function disarm(){
   armed = null;
-  $("b-prog").classList.remove("armed");
-  $("b-prog").textContent = "Put the programme back on the internet";
+  clearTimeout(armTimer);
+  for (const [state, [label]] of Object.entries(LABELS)){
+    const b = document.querySelector(`#panel [data-state="${state}"]`);
+    b.classList.remove("armed");
+    b.textContent = label;
+  }
 }
 function msg(t, kind){ $("msg").textContent = t || ""; $("msg").className = "msg " + (kind || ""); }
 
@@ -169,12 +181,12 @@ async function setState(state){
 $("panel").addEventListener("click", e => {
   const b = e.target.closest("button[data-state]"); if (!b || busy) return;
   const state = b.dataset.state;
-  if (state === "programme" && armed !== "programme"){
-    // Two taps: putting the programme back online by mistake mid-commentary is the thing to avoid.
-    armed = "programme";
+  if (LABELS[state] && armed !== state){
+    disarm();
+    armed = state;
     b.classList.add("armed");
-    b.textContent = "Tap again: commentary over, programme back online";
-    setTimeout(() => { if (armed === "programme" && !busy) disarm(); }, 5000);
+    b.textContent = LABELS[state][1];
+    armTimer = setTimeout(() => { if (!busy) disarm(); }, 5000);
     return;
   }
   setState(state);
