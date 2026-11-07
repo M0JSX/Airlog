@@ -21,6 +21,10 @@ if TYPE_CHECKING:
 
 NO_WINDOW = sources.NO_WINDOW
 WATCHDOG_S = 20              # no data for this long -> restart the source
+CARD_NODATA_S = 5            # a sound card that's open but sends nothing for this long is given up
+QUIET_AFTER = 3              # failed attempts in a row before the log goes quiet...
+QUIET_SUMMARY_S = 600        # ...apart from a summary this often, until it works again
+NOT_CAUSES = ("Source ended", "failed ", "still not working")   # consequences, not the error to report
 RING_S = 30                  # recent audio kept per source, for filling the gap at a switch
 
 
@@ -44,9 +48,29 @@ class Capture:
         self.ring: collections.deque = collections.deque(maxlen=RING_S * engine.block_rate)
         self.running = False
         self.thread: threading.Thread | None = None
+        self.feeder: threading.Thread | None = None   # sound card / files -> ffmpeg, for this attempt
+        self.fails = 0                        # attempts in a row that produced no audio
+        self.quiet = False                    # repeated failures: hold messages back (see log())
+        self.held = 0
+        self.last_error = ""
+        self.summary_at = 0.0
 
     # ------------------------------------------------------------------ lifecycle
-    def log(self, msg: str, error: bool = False) -> None:
+    def log(self, msg: str, error: bool = False, force: bool = False) -> None:
+        """While a source keeps failing the same way, every attempt would log the same few lines (every
+        30 s, for hours). After QUIET_AFTER failures in a row they're held back, with a summary every
+        QUIET_SUMMARY_S, until audio arrives again."""
+        if self.quiet and not force:
+            self.held += 1
+            if error and not msg.startswith(NOT_CAUSES):
+                self.last_error = msg
+            if time.monotonic() >= self.summary_at:
+                self.summary_at = time.monotonic() + QUIET_SUMMARY_S
+                self.engine.log(self.prefix + f"still not working: {self.fails} attempts so far, retrying every "
+                                f"{int(self._backoff)}s (last error: {self.last_error or 'none recorded'})", error=True)
+            return
+        if error and not msg.startswith(NOT_CAUSES):
+            self.last_error = msg
         self.engine.log(self.prefix + msg, error=error)
 
     def describe(self) -> str:
@@ -71,6 +95,7 @@ class Capture:
                 pass
         if self.thread:
             self.thread.join(timeout=5)
+        self._wait_feeder()                       # the card closed before we say we've stopped
         self.status = "stopped"
 
     # ------------------------------------------------------------------ health (for failover)
@@ -101,6 +126,18 @@ class Capture:
         end = time.monotonic() + s
         while self.running and time.monotonic() < end:
             time.sleep(0.2)
+
+    _backoff = 2.0
+
+    def _wait_feeder(self) -> None:
+        """The previous attempt's sound card reader must have let go of the card before it's opened
+        again (and before the process exits: PortAudio still running at exit can crash it)."""
+        f = self.feeder
+        if f is not None and f.is_alive():
+            f.join(timeout=CARD_NODATA_S + 3)
+            if f.is_alive():
+                self.log("the sound card reader hasn't stopped; the card may stay busy", error=True)
+        self.feeder = None
 
     def _supervise(self) -> None:
         backoff = 2.0
@@ -146,7 +183,9 @@ class Capture:
                 threading.Thread(target=self._feed_push, args=(sender, self.proc), daemon=True).start()
             if feed:
                 target = self._feed_card if feed == "card" else self._feed_files
-                threading.Thread(target=target, args=(self.proc,), daemon=True).start()
+                self.feeder = threading.Thread(target=target, args=(self.proc,), daemon=True,
+                                               name=f"feed-{self.role}")
+                self.feeder.start()
             self.last_data = time.monotonic()
             got_any = self._read_loop(self.proc)
             if self.proc.poll() is None:
@@ -154,6 +193,16 @@ class Capture:
                     self.proc.kill()
                 except Exception:
                     pass
+            self._wait_feeder()
+            if got_any:
+                self.fails = 0
+            elif not self.receiving:
+                self.fails += 1
+                if self.fails == QUIET_AFTER and not self.quiet:
+                    self.log(f"failed {self.fails} times in a row; logging this only every "
+                             f"{QUIET_SUMMARY_S // 60} minutes until it works", error=True)
+                    self.quiet, self.held = True, 0
+                    self.summary_at = time.monotonic() + QUIET_SUMMARY_S
             if sender:
                 sender.close()
                 if self.push:
@@ -171,8 +220,10 @@ class Capture:
                 continue
             self.status = "reconnecting"
             self.log(f"Source ended (ffmpeg exit {self.proc.returncode}); retrying in {backoff:.0f}s", error=True)
+            self._backoff = backoff
             self._sleep(backoff)
             backoff = 2.0 if got_any else min(backoff * 2, 30.0)
+        self._wait_feeder()
         self.status = "stopped"
 
     def _wait_for_push(self):
@@ -233,11 +284,28 @@ class Capture:
             except OutputError as e:
                 raise ValueError(str(e)) from None
             dev, label = sources.portaudio_input(sd, cfg.device_name)
-            with sd.RawInputStream(samplerate=sr, channels=ch, dtype="int16", device=dev,
-                                   latency="high", blocksize=block) as stream:
+            stream = sd.RawInputStream(samplerate=sr, channels=ch, dtype="int16", device=dev,
+                                       latency="high", blocksize=block)
+            try:
+                stream.start()
+                # Only read what's there: a blocking read on a card that opened but sends nothing never
+                # returns, and that thread would hold the card (and PortAudio) for good.
+                last = time.monotonic()
                 while self.running and proc.poll() is None:
-                    data, _overflowed = stream.read(block)
-                    proc.stdin.write(bytes(data))
+                    if stream.read_available >= block:
+                        data, _overflowed = stream.read(block)
+                        proc.stdin.write(bytes(data))
+                        last = time.monotonic()
+                    elif time.monotonic() - last > CARD_NODATA_S:
+                        raise OSError(f"{label} opened, but no audio came from it for {CARD_NODATA_S}s")
+                    else:
+                        time.sleep(0.02)
+            finally:
+                for step in (stream.abort, stream.close):
+                    try:
+                        step()
+                    except Exception:
+                        pass
         except (BrokenPipeError, OSError) as e:
             if self.running and proc.poll() is None and not lifecycle.SHUTTING_DOWN.is_set():
                 self.log(f"Sound card: {e}", error=True)
@@ -333,6 +401,10 @@ class Capture:
             if not got_any:
                 got_any = True
                 self.ever_recorded = True
+                if self.quiet:
+                    self.quiet = False
+                    self.log(f"working again after {self.fails} failed attempts", force=True)
+                self.fails = 0
                 if self.status != "recording":
                     self.log("Recording" if self.role == "main" else "Receiving audio (standing by)")
                 self.status = "recording"

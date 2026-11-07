@@ -697,6 +697,10 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
   RTP (with and without SDP) and Icecast push (MP3 and Opus) to another that
   receives it; plus wrong passwords, the Icecast SOURCE fallback, song titles,
   Shoutcast v1, and a stalled server not holding up recording.
+- `python tests/test_alsacapture.py` reads a stand-in Linux sound card through
+  PortAudio: recording, unplugging, a card that won't open, a card that opens
+  but sends nothing (it must be let go of, and closed before stopping), and the
+  log going quiet during repeated failures.
 - `python tests/test_failover.py` runs a main source it can cut, silence and
   restore, with a backup tone at a different level: failover on dropout (no
   hole in the recording), on silence, no flapping, switching back, and starting

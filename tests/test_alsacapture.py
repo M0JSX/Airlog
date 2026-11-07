@@ -27,22 +27,46 @@ class PortAudioError(Exception):
 
 
 class FakeInput:
+    """Like an ALSA capture device: only one opener at a time; read() blocks until audio is there,
+    which is for ever when the card opened but sends nothing ("stalled")."""
+
     def __init__(self, samplerate, channels, dtype, device, latency, blocksize):
-        if FAKE.missing:
+        if FAKE.missing or FAKE.open_now:
             raise PortAudioError("Error opening RawInputStream: Device unavailable [PaErrorCode -9985]")
         assert dtype == "int16"
         self.sr, self.ch, self.device = samplerate, channels, device
         self.t = 0
         self.next = time.monotonic()
+        self.closed = False
         FAKE.opened.append(device)
+        FAKE.open_now += 1
+
+    def start(self):
+        self.next = time.monotonic()
+
+    @property
+    def read_available(self):
+        return 0 if FAKE.stalled else max(0, int((time.monotonic() - self.next) * self.sr))
+
+    def abort(self):
+        pass
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            FAKE.open_now -= 1
 
     def __enter__(self):
+        self.start()
         return self
 
     def __exit__(self, *a):
+        self.close()
         return False
 
     def read(self, frames):
+        while FAKE.stalled:                           # a real blocking read never returns here
+            time.sleep(0.05)
         self.next += frames / self.sr                 # real time, like a card
         time.sleep(max(0.0, self.next - time.monotonic()))
         if FAKE.unplugged:
@@ -55,7 +79,7 @@ class FakeInput:
         return a.tobytes(), False
 
 
-FAKE = types.SimpleNamespace(missing=False, unplugged=False, opened=[])
+FAKE = types.SimpleNamespace(missing=False, unplugged=False, stalled=False, open_now=0, opened=[])
 sd = types.ModuleType("sounddevice")
 sd.PortAudioError = PortAudioError
 sd.RawInputStream = FakeInput
@@ -137,6 +161,42 @@ FAKE.missing = False
 assert wait(lambda: e.status == "recording", 30), list(e.logs)[-6:]
 print("   OK")
 e.stop()
+
+print("-- a card that opens but sends nothing: let go of, so the next attempt can open it")
+assert FAKE.open_now == 0, "a stopped engine left the card open"
+FAKE.stalled = True
+e = engine("stalled", "default")
+e.start()
+assert wait(lambda: any("no audio came from it" in x for x in e.logs), 15), list(e.logs)[-6:]
+assert wait(lambda: FAKE.open_now == 0, 3), "the stalled card was never closed"
+assert wait(lambda: sum("Source: " in x for x in e.logs) >= 2, 15), list(e.logs)[-6:]   # retried
+print("   OK:", next(x for x in e.logs if "no audio came" in x).split("  ", 1)[-1])
+assert not any("Device unavailable" in x for x in e.logs), "a retry found the card still held"
+FAKE.stalled = False
+assert wait(lambda: e.status == "recording", 40), list(e.logs)[-6:]
+print("-- stopping closes the card first (PortAudio left running at exit is what crashed)")
+e.stop()
+assert FAKE.open_now == 0, "stopped with the card still open"
+print("   OK")
+
+print("-- repeated failures: a few lines, then quiet with a summary, then 'working again'")
+import airlog.capture as capture  # noqa: E402
+capture.QUIET_SUMMARY_S = 6
+FAKE.missing = True
+e = engine("quiet", "default")
+e.start()
+assert wait(lambda: any("logging this only every" in x for x in e.logs), 40), list(e.logs)[-8:]
+quiet_from = len(e.logs)
+assert wait(lambda: any("still not working" in x for x in list(e.logs)[quiet_from:]), 40), list(e.logs)[-5:]
+held = list(e.logs)[quiet_from:]
+print(f"   while quiet, {len(held)} line(s) in the log:", [x.split("  ", 1)[-1][:90] for x in held])
+assert all("still not working" in x for x in held), held       # only the summary
+assert "Device unavailable" in held[-1], held                    # naming the cause
+FAKE.missing = False
+assert wait(lambda: any("working again after" in x for x in e.logs), 40), list(e.logs)[-5:]
+assert wait(lambda: e.status == "recording", 10)
+e.stop()
+print("   OK")
 
 print("-- device list without arecord comes from PortAudio")
 orig = sources._run
