@@ -996,7 +996,7 @@ const FIELDS = [
   ["backup_source_type","Backup","select",[["stream","Internet stream"],["device","Sound card input"],["receive","Receive a stream (SRT / UDP / RTP / Icecast push)"],["custom","Custom ffmpeg input"]],null,"backup:on"],
   ["backup_stream_url","Stream URL","text",null,"e.g. your station's public stream as the backup for an STL feed","backup:stream"],
   ["backup_device_backend","Driver","select","backends",null,"backup:device"],
-  ["backup_device_name","Input","text",null,"e.g. plughw:1,0 (press Refresh on the main Input to see the names)","backup:device"],
+  ["backup_device_name","Input","device",null,"Pick from the list, or type e.g. plughw:1,0","backup:device"],
   ["backup_receive_protocol","Receive","select",[["srt","SRT"],["icecast","Icecast push"],["udp","MPEG-TS over UDP"],["rtp","RTP"]],null,"backup:receive"],
   ["backup_receive_port","Port","number",null,"Must differ from the main source's port","backup:receive"],
   ["backup_receive_passphrase","SRT passphrase","password",null,"Optional, 10–79 characters","backup:receive","srt"],
@@ -1017,7 +1017,7 @@ const FIELDS = [
   ["alt_files_dir","Folder","text",null,"A folder on the recorder. MP3, WAV, FLAC, Ogg, Opus, M4A/AAC…, played in file-name order and looped. Files added later are picked up on the next loop","alt:files"],
   ["alt_stream_url","Stream URL","text",null,"e.g. a sustaining service or another of your streams","alt:stream"],
   ["alt_device_backend","Driver","select","backends",null,"alt:device"],
-  ["alt_device_name","Input","text",null,"e.g. plughw:2,0 (press Refresh on the main Input to see the names)","alt:device"],
+  ["alt_device_name","Input","device",null,"Pick from the list, or type e.g. plughw:2,0. On Linux use a different card from the main source: a card's input can usually only be opened once","alt:device"],
   ["alt_receive_protocol","Receive","select",[["srt","SRT"],["icecast","Icecast push"],["udp","MPEG-TS over UDP"],["rtp","RTP"]],null,"alt:receive"],
   ["alt_receive_port","Port","number",null,"Must differ from the main and backup sources' ports","alt:receive"],
   ["alt_receive_passphrase","SRT passphrase","password",null,"Optional, 10–79 characters","alt:receive","srt"],
@@ -1221,7 +1221,7 @@ async function openSettings(){
       const o = opts === "backends" ? r.backends.map(b => [b, b]) : opts;
       input = `<select id="f_${k}">` + o.map(([val, l]) => `<option value="${val}" ${String(val) === String(v || ((k==="device_backend" || k==="backup_device_backend" || k==="alt_device_backend")?r.default_backend:"")) ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
     } else if (type === "device"){
-      input = `<div style="display:flex;gap:6px"><input type="text" list="devlist" id="f_${k}" value="${esc(String(v ?? ""))}" style="flex:1"><button class="small" id="devrefresh">Refresh</button></div><datalist id="devlist"></datalist>`;
+      input = `<div style="display:flex;gap:6px"><input type="text" list="devlist_${k}" id="f_${k}" value="${esc(String(v ?? ""))}" style="flex:1"><button class="small" data-devrefresh="${k.replace("device_name", "")}">Refresh</button></div><datalist id="devlist_${k}"></datalist>`;
     } else if (type === "kbps"){
       input = `<select id="f_${k}">${bitrateOptions(opts, v)}</select>`;
     } else if (type === "schedule"){
@@ -1271,8 +1271,12 @@ async function openSettings(){
     const b = e.target.closest("[data-sdel]"); if (b){ e.preventDefault(); b.closest(".schedrow").remove(); }
   });
   if (!r.can_edit) f.querySelectorAll("input,select,button").forEach(x => x.disabled = true);
-  $("f_device_backend").onchange = refreshDevices;
-  $("devrefresh").onclick = e => { e.preventDefault(); refreshDevices(); };
+  // Sound card pickers: the main source, the backup and the alternative input each list the cards
+  // for their own driver.
+  for (const pre of ["", "backup_", "alt_"]){
+    $(`f_${pre}device_backend`).onchange = () => refreshDevices(pre, true);
+    f.querySelector(`[data-devrefresh="${pre}"]`).onclick = e => { e.preventDefault(); refreshDevices(pre, true); };
+  }
   syncSource();
   $("settings").classList.add("on");
 }
@@ -1302,14 +1306,23 @@ function syncSource(){
     }
     r.style.display = show ? "" : "none";
   });
-  if (t === "device") refreshDevices();
+  if (t === "device") refreshDevices("");
+  if (bOn && bt === "device") refreshDevices("backup_");
+  if (aOn && at === "device") refreshDevices("alt_");
 }
-async function refreshDevices(){
+// List the sound cards for one source's driver (pre: "", "backup_" or "alt_"). Fetched once per driver
+// unless forced by Refresh. Only the main source gets the first card filled in for it: a backup or
+// alternative on the same card as the main source usually can't open it.
+async function refreshDevices(pre = "", force = false){
+  const backend = $(`f_${pre}device_backend`).value, list = $(`devlist_${pre}device_name`), name = $(`f_${pre}device_name`);
+  if (!list || (!force && list.dataset.backend === backend)) return;
+  list.dataset.backend = backend;
   try {
-    const r = await api("/api/devices?backend=" + encodeURIComponent($("f_device_backend").value));
-    $("devlist").innerHTML = r.devices.map(x => `<option value="${esc(x.value)}">${esc(x.label)}</option>`).join("");
-    if (!$("f_device_name").value && r.devices.length) $("f_device_name").value = r.devices[0].value;
-  } catch(e){}
+    const r = await api("/api/devices?backend=" + encodeURIComponent(backend));
+    list.innerHTML = r.devices.map(x => `<option value="${esc(x.value)}">${esc(x.label)}</option>`).join("");
+    if (!pre && !name.value && r.devices.length) name.value = r.devices[0].value;
+    if (force) toast(r.devices.length ? `${r.devices.length} input${r.devices.length > 1 ? "s" : ""} found` : "No inputs found for this driver", r.devices.length ? "ok" : "bad");
+  } catch(e){ delete list.dataset.backend; toast(e.message, "bad"); }
 }
 async function saveSettings(){
   const out = {};
