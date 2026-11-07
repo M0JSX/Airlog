@@ -23,6 +23,9 @@ send it on, processed, to wherever it needs to go.
   That covers logging straight off an STL.
 - A **backup source** running alongside the main one takes over automatically if
   the main one drops out or goes silent, with no hole in the recording.
+- An **alternative input for internet outputs**: for programmes that mustn't go
+  online (football commentary licensed for the hospital service only), chosen
+  outputs carry something else while the recording keeps the programme.
 
 **Outputs**
 - Send the station on live to **Icecast or Shoutcast** (with song titles),
@@ -267,6 +270,10 @@ WireGuard) or nginx with HTTPS. Don't port-forward it.
 - **Backup source:** a second source runs alongside the main one and takes over
   automatically if the main source drops out or goes silent, then hands back
   when it recovers. See [Backup source](#backup-source).
+- **Alternative input:** chosen outputs (usually the internet streams) carry a
+  different input, by a button, a schedule or permanently, while the recording
+  and the other outputs keep the programme. See
+  [Alternative input](#alternative-input-for-internet-outputs).
 - **Encoder outputs:** sends what it records on to Icecast/Shoutcast, another
   Airlog, or an STL codec, at the same time as recording it, with optional
   compressor and limiter processing per output.
@@ -434,6 +441,46 @@ from the backup's recent audio, so the archive has no hole. The header shows
 in the log. At start-up the main source gets 15 s to connect before the backup
 takes over.
 
+### Alternative input for internet outputs
+
+Some programmes may go out on the hospital service but not on the internet,
+such as football commentaries. Settings → **Alternative input for internet
+outputs** gives the internet streams something else to carry at those times,
+while the recording, grabs and the other outputs keep the programme as it aired.
+
+1. Tick **Use an alternative input** and choose what it is: a **folder of audio
+   files** played in a loop (an announcement and some music, say), an internet
+   stream, a sound card, a received stream or custom ffmpeg input. Like the
+   backup source, it runs all the time, so switching is instant.
+2. On each output, set **Feed**: *Programme* (always what's being recorded:
+   the STL to the transmitter, for example) or *Switches to the alternative
+   input* (the Icecast/Shoutcast streams).
+3. Choose **Switching**:
+   - **Button on the main page:** *Programme | Alternative* in the header.
+   - **Schedule:** times entered in advance, by day (*Sat*, *Tue Wed*) or date
+     (*2026-11-14*); an end before the start runs past midnight. The button
+     offers *Schedule | Programme | Alternative*: the last two hold that state
+     by hand (a match that runs late) until you set it back to *Schedule*.
+   - **Always:** the switched outputs never carry the programme.
+
+The header shows what the internet outputs are carrying, in amber when it's the
+alternative, with the current or next scheduled window, and switched outputs
+show **ALT**. Every switch is in the log.
+
+It's built not to leak the programme:
+
+- At the moment of switching, programme audio already queued for the switched
+  outputs is dropped rather than sent.
+- If the alternative input fails, the switched outputs send silence (and stay
+  connected); they never fall back to the programme.
+- The choice is saved, so after a restart or a power cut mid-match the
+  switched outputs carry the alternative from the first second.
+- Switching back to the programme from the button asks for confirmation.
+
+**Title while switched** is sent as the song title on switched Icecast and
+Shoutcast outputs; left blank, it's the name of the file playing, or the
+station name.
+
 ### Song identification
 
 This uses [shazamio](https://github.com/shazamio/ShazamIO), an *unofficial*
@@ -575,6 +622,8 @@ The browser UI uses these; they're handy for scripting too.
 | `GET /api/tracks[?limit=200]` | identified songs, newest first (`now_playing` is also in `/api/status`) |
 | `GET/POST /api/config` | settings (POST: signed in, local browser, or *Trusted network*) |
 | `POST /api/record {action: start\|stop}` | control (as above) |
+| `POST /api/outputs/<id> {enabled}` | switch one output on or off (as above) |
+| `POST /api/alt {state: alternative\|programme\|auto}` | what the switched outputs carry; `auto` hands back to the schedule (as above) |
 | `POST /api/login {password}` | single-use sign-in token for `GET /login?t=` (used by Airlog Viewer) |
 
 For example, to get the last two minutes as an MP3 from a shell:
@@ -609,6 +658,13 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
 - `python tests/test_processing.py` measures every processing preset on a test
   signal (level gap, peaks vs ceiling), checks multiband against pumping, tonal
   balance, band trims and drive, and checks a limited output end to end.
+- `python tests/test_altfeed.py` feeds the programme and the alternative input
+  at different levels and measures every block each output gets: switched
+  outputs carry the alternative, the other outputs and the recording never do,
+  and no programme reaches a switched output after a switch, when the
+  alternative input stalls, or after a restart mid-match. Also the schedule
+  (days, dates, past midnight, overrides), a looped folder of mixed files,
+  titles and the API.
 - `python tests/test_nowplaying.py` checks the song-change logic against canned
   Shazam answers (no network).
 

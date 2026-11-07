@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from .config import Config
 
@@ -72,8 +73,35 @@ def portaudio_input(sd, name: str):
     return pick, f"sound card '{sd.query_devices(pick)['name']}'"
 
 
+AUDIO_EXT = (".mp3", ".wav", ".flac", ".ogg", ".opus", ".m4a", ".aac", ".mp2", ".aiff", ".aif", ".wma")
+
+
+def audio_files(folder: str) -> list[Path]:
+    """The audio files in a folder (not subfolders), in name order: the "files" source's playlist."""
+    d = Path(folder or "")
+    if not folder or not d.is_dir():
+        return []
+    return sorted((p for p in d.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXT),
+                  key=lambda p: p.name.lower())
+
+
+def feeder(cfg: Config) -> str | None:
+    """Sources whose audio Airlog produces itself and pipes into the capture ffmpeg as raw PCM:
+    "card" (Linux ALSA via PortAudio) or "files" (a folder played in a loop), else None."""
+    if cfg.source_type == "files":
+        return "files"
+    if via_portaudio(cfg):
+        return "card"
+    return None
+
+
 def input_args(cfg: Config) -> list[str]:
     """ffmpeg arguments placed before the output section."""
+    if cfg.source_type == "files":
+        if not cfg.files_dir.strip():
+            raise ValueError("No folder of audio files chosen")
+        # Airlog decodes the files one by one, in real time, and pipes the PCM in (see Capture._feed_files).
+        return ["-f", "s16le", "-ar", str(cfg.sample_rate), "-ac", str(cfg.channels), "-i", "pipe:0"]
     if cfg.source_type == "stream":
         url = cfg.stream_url.strip()
         if not url:
@@ -167,6 +195,9 @@ def describe(cfg: Config) -> str:
         return cfg.stream_url or "(no URL)"
     if cfg.source_type == "device":
         return f"{cfg.device_backend or default_backend()}: {cfg.device_name or 'default'}"
+    if cfg.source_type == "files":
+        n = len(audio_files(cfg.files_dir))
+        return f"files in {cfg.files_dir or '(no folder)'}, looped ({n} file{'s' if n != 1 else ''})"
     return "custom: " + cfg.custom_input_args
 
 

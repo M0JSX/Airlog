@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import lifecycle, nowplaying, outputs, sources
+from . import altfeed, lifecycle, nowplaying, outputs, sources
 from .capture import Capture
 from .config import Config
 
@@ -363,6 +363,12 @@ class Engine:
         # Sources: the main one, and optionally a backup running alongside it (hot standby).
         self.main = Capture(self, cfg, "main")
         self.backup = Capture(self, cfg.backup_config(), "backup") if cfg.backup_enabled else None
+        # The alternative input for internet outputs (never recorded): running whenever it's enabled,
+        # so switching to it is instant.
+        self.alt = Capture(self, cfg.alt_config(), "alt") if cfg.alt_enabled else None
+        self.alt_on = False
+        self.alt_why = ""
+        self.alt_switches: collections.deque[dict] = collections.deque(maxlen=50)
         self.active = self.main
         self.select_lock = threading.RLock()  # held while a block is placed or the source switches
         self.switches: collections.deque[dict] = collections.deque(maxlen=50)
@@ -428,6 +434,11 @@ class Engine:
         self.main.start()
         if self.backup:
             self.backup.start()
+        if self.alt:
+            self.alt.start()
+        # Decide before any output starts: after a restart mid-match the outputs must come up on the
+        # alternative, never with a moment of the programme.
+        self._apply_alt(log_unchanged=True)
         threading.Thread(target=self._watchdog, name="watchdog", daemon=True).start()
         threading.Thread(target=self._housekeeping, name="housekeeping", daemon=True).start()
         if self.cfg.identify_songs:
@@ -439,7 +450,7 @@ class Engine:
         self._running = False
         self.outputs.stop()
         self.tracks.close(self.live_time() or time.time())
-        for c in (self.main, self.backup):
+        for c in (self.main, self.backup, self.alt):
             if c:
                 c.stop()
         with self.select_lock:
@@ -534,6 +545,9 @@ class Engine:
     def _ingest(self, cap: Capture, pcm: bytes) -> None:
         """A block from either source. Every block is kept in that source's recent-audio ring;
         only the source on air is recorded."""
+        if cap.role == "alt":                 # the alternative input only ever goes to switched outputs
+            self.outputs.feed_alt(pcm)
+            return
         n = len(pcm) // self.bpf
         t_start = self.now() - cap.delay - n / self.sr
         cap.ring.append((t_start, pcm))
@@ -544,14 +558,62 @@ class Engine:
     def _watchdog(self) -> None:
         while self._running:
             time.sleep(0.5)
-            for c in (self.main, self.backup):
+            for c in (self.main, self.backup, self.alt):
                 if c:
                     c.watchdog_tick()
+            if self.cfg.alt_enabled:
+                try:
+                    self._apply_alt()
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"Alternative switch check failed: {type(e).__name__}: {e}", error=True)
             if self.backup:
                 try:
                     self._decide()
                 except Exception as e:  # noqa: BLE001 - never let failover logic kill the watchdog
                     self.log(f"Failover check failed: {type(e).__name__}: {e}", error=True)
+
+    # ------------------------------------------------------------------ alternative input
+    def _apply_alt(self, log_unchanged: bool = False) -> None:
+        """Point the switched outputs at the programme or the alternative, as altfeed decides."""
+        on, why = altfeed.decide(self.cfg)
+        if on == self.alt_on and not log_unchanged:
+            self.alt_why = why
+            return
+        changed = on != self.alt_on
+        self.alt_on, self.alt_why = on, why
+        self.outputs.set_alt(on)
+        if not self.cfg.alt_enabled:
+            return
+        if changed or on:
+            what = "the ALTERNATIVE input" if on else "the programme"
+            self.log(f"Internet outputs: now carrying {what} ({why})")
+            self.alt_switches.append({"at": time.time(), "on": on, "why": why})
+
+    def set_alt_override(self, state: str) -> None:
+        """The main page's button: "alternative", "programme", or "" (follow the schedule)."""
+        if state not in altfeed.OVERRIDES:
+            raise ValueError("state must be alternative, programme or auto")
+        self.cfg.alt_override = state
+        self._apply_alt()
+
+    def alt_title(self) -> str:
+        """Now-playing text for switched outputs while they carry the alternative."""
+        if self.cfg.alt_title.strip():
+            return self.cfg.alt_title.strip()
+        if self.alt and self.alt.playing:
+            return self.alt.playing
+        return self.cfg.station_name
+
+    def alt_status(self) -> dict | None:
+        if not self.cfg.alt_enabled:
+            return None
+        d = altfeed.describe(self.cfg)
+        d["on"] = self.alt_on                     # what the outputs are actually doing
+        c = self.alt
+        d["input"] = {"status": c.status, "source": c.describe(), "playing": c.playing,
+                      "sender": c.sender} if c else None
+        d["switches"] = list(self.alt_switches)[-10:]
+        return d
 
     def _decide(self) -> None:
         cfg, m, b = self.cfg, self.main, self.backup
