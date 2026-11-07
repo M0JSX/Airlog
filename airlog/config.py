@@ -113,6 +113,7 @@ class Config:
     web_port: int = 8080
     web_password: str = ""            # blank = no login (trusted LAN only)
     trusted_lan: bool = False         # no password: let any machine on the network change settings
+    switch_password: str = ""         # the /switch page (internet outputs only); blank = page off
     announce: bool = True             # advertise on the LAN (mDNS) so Airlog Viewer can find it
 
     # --- Backup source: runs alongside the main one and takes over if it fails ---

@@ -116,6 +116,18 @@ footer{display:flex;justify-content:space-between;color:var(--dim);font-size:12p
 .frow input[type=checkbox]{justify-self:start;width:18px;height:18px}
 .frow input[type=text],.frow input[type=password],.frow input[type=number],.frow select{width:100%}
 .sheetbtns{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+#browser{z-index:11}
+#browser .sheet{width:min(640px,100%)}
+.brroots{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.brpath{display:flex;gap:6px;margin-bottom:8px}
+.brpath input{flex:1;min-width:0;font-family:var(--mono);font-size:13px}
+.brlist{border:1px solid var(--line);border-radius:6px;max-height:min(46vh,420px);overflow:auto;background:var(--panel)}
+.brlist button{display:block;width:100%;text-align:left;border:0;border-radius:0;background:transparent;padding:7px 10px;overflow:hidden;text-overflow:ellipsis}
+.brlist button+button{border-top:1px solid var(--line)}
+.brlist button:hover,.brlist button:focus-visible{background:var(--panel2)}
+.brlist .empty{padding:10px;color:var(--dim);font-size:13px}
+.brfiles{font-size:12px;color:var(--dim);margin-top:8px;max-height:7.5em;overflow:auto}
+.brfiles b{color:var(--fg)}
 #toast{position:fixed;bottom:44px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:8px 14px;border-radius:8px;display:none;z-index:20}
 .np{display:flex;align-items:center;gap:12px;min-width:0;flex:1 1 280px;max-width:520px}
 .np img{width:56px;height:56px;border-radius:6px;object-fit:cover;background:var(--panel2);flex:none}
@@ -230,6 +242,18 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
 </main>
 
 <footer><span id="buf"></span><span id="ver"></span></footer>
+
+<div class="modal" id="browser" role="dialog" aria-modal="true" aria-labelledby="brtitle"><div class="sheet">
+  <h2 id="brtitle">Choose a folder <span class="dim" style="font-size:13px;font-weight:400">on the recorder</span></h2>
+  <div class="brroots" id="brroots"></div>
+  <div class="brpath"><input type="text" id="brpath" spellcheck="false" aria-label="Folder"><button class="small" id="brgo">Go</button></div>
+  <div class="brlist" id="brlist"></div>
+  <div class="brfiles" id="brfiles"></div>
+  <div class="sheetbtns">
+    <button id="brmkdir" style="margin-right:auto">New folder…</button>
+    <button id="brcancel">Cancel</button><button class="accent" id="bruse">Use this folder</button>
+  </div>
+</div></div>
 
 <div class="modal" id="settings"><div class="sheet">
   <h2>Recorder settings</h2>
@@ -1014,7 +1038,7 @@ const FIELDS = [
   ["alt_mode","Switching","select",[["manual","Button on the main page"],["schedule","Schedule (the button can override it)"],["permanent","Always: switched outputs never carry the programme"]],null,"alt:on"],
   ["alt_schedule","Schedule","schedule",null,"Days (e.g. <i>Sat</i> or <i>Tue Wed</i>) or a date (2026-11-14). An end before the start runs past midnight. Times are the recorder's clock","alt:sched"],
   ["alt_source_type","Alternative","select",[["files","Folder of audio files (played in a loop)"],["stream","Internet stream"],["device","Sound card input"],["receive","Receive a stream (SRT / UDP / RTP / Icecast push)"],["custom","Custom ffmpeg input"]],null,"alt:on"],
-  ["alt_files_dir","Folder","text",null,"A folder on the recorder. MP3, WAV, FLAC, Ogg, Opus, M4A/AAC…, played in file-name order and looped. Files added later are picked up on the next loop","alt:files"],
+  ["alt_files_dir","Folder","folder",null,"A folder on the recorder. MP3, WAV, FLAC, Ogg, Opus, M4A/AAC…, played in file-name order and looped. Files added later are picked up on the next loop","alt:files"],
   ["alt_stream_url","Stream URL","text",null,"e.g. a sustaining service or another of your streams","alt:stream"],
   ["alt_device_backend","Driver","select","backends",null,"alt:device"],
   ["alt_device_name","Input","device",null,"Pick from the list, or type e.g. plughw:2,0. On Linux use a different card from the main source: a card's input can usually only be opened once","alt:device"],
@@ -1027,9 +1051,10 @@ const FIELDS = [
   ["alt_receive_sdp","SDP from the sender","textarea",null,"For RTP with PCM, Opus or AAC","alt:receive","rtp"],
   ["alt_custom_input_args","ffmpeg input args","text",null,null,"alt:custom"],
   ["alt_title","Title while switched","text",null,"Sent as the song title by switched Icecast/Shoutcast outputs, e.g. <i>Normal service resumes after the match</i>. Blank = the file playing, or the station name","alt:on"],
+  ["switch_password","Switch page password","password",null,`Lets commentators switch the internet outputs from <b>${location.protocol}//${location.host}/switch</b> with only this password: they can't see or change anything else. Blank = page off. At least 8 characters, different from the web password. To use it from outside, see “Switch page” in the README`,"alt:on"],
   ["Hourly archive"],
   ["archive_enabled","Record archive files","bool"],
-  ["archive_dir","Folder","text"],
+  ["archive_dir","Folder","folder"],
   ["archive_pattern","File name","text",null,"strftime codes + {station}; / makes sub-folders; time = file start"],
   ["archive_format","Format","select",[["mp3","MP3"],["flac","FLAC"],["wav","WAV"],["ogg","Ogg Vorbis"]]],
   ["archive_bitrate_kbps","Bitrate (kbps)","kbps","mp3","MP3 / Ogg only"],
@@ -1037,10 +1062,10 @@ const FIELDS = [
   ["archive_keep_days","Delete after (days)","number",null,"0 = keep forever"],
   ["Grabs"],
   ["buffer_minutes","Grab buffer (min)","number",null,"How far back you can grab. ~690 MB/hour at 48 kHz stereo"],
-  ["spool_dir","Buffer folder","text",null,"Blank = .spool in the data folder. On a machine that boots from an SD card, use a USB SSD"],
+  ["spool_dir","Buffer folder","folder",null,"Blank = .spool in the data folder. On a machine that boots from an SD card, use a USB SSD"],
   ["grab_format","Default format","select",[["wav","WAV"],["mp3","MP3"],["flac","FLAC"]]],
   ["grab_preroll_s","Pre-roll (s)","number",null,"Added before the in-point on downloads and saves"],
-  ["grabs_dir","Saved grabs folder","text"],
+  ["grabs_dir","Saved grabs folder","folder"],
   ["grab_pattern","Grab file name","text"],
   ["Song identification"],
   ["identify_songs","Identify songs","bool",null,"Sends a 12-second sample to Shazam (unofficial API) at each check"],
@@ -1206,6 +1231,64 @@ function collectOutputs(){
   });
   return outList;
 }
+// ------------------------------------------------------------ folder browser (settings)
+// Browses folders on the recorder (not this computer), via /api/browse.
+let brField = null, brCur = null;
+async function browseTo(path){
+  let r;
+  try { r = await api("/api/browse?path=" + encodeURIComponent(path || "")); }
+  catch(e){ return toast(e.message, "bad"); }
+  brCur = r;
+  $("brpath").value = r.path;
+  $("brroots").innerHTML = r.roots.map(x => `<button class="small" data-brgo="${esc(x.path)}">${esc(x.label)}</button>`).join("");
+  const rows = [];
+  if (r.parent !== null) rows.push(`<button data-brgo="${esc(r.parent)}">⬑ Up a level</button>`);
+  const join = n => r.path.endsWith(r.sep) ? r.path + n : r.path + r.sep + n;
+  for (const d of r.dirs) rows.push(`<button data-brgo="${esc(join(d))}">📁 ${esc(d)}</button>`);
+  if (r.error) rows.push(`<div class="empty bad">${esc(r.error)}</div>`);
+  else if (!r.dirs.length) rows.push(`<div class="empty">No folders inside this one</div>`);
+  $("brlist").innerHTML = rows.join("");
+  $("brlist").scrollTop = 0;
+  let files = "";
+  if (r.audio_count){
+    const shown = r.audio.slice(0, 50).map(esc).join(", ");
+    files = `<b>${r.audio_count} audio file${r.audio_count > 1 ? "s" : ""}</b> here: ${shown}${r.audio_count > 50 ? ", …" : ""}`;
+  } else if (brField === "alt_files_dir") files = "No audio files in this folder";
+  if (r.other_count) files += `${files ? " · " : ""}${r.other_count} other file${r.other_count > 1 ? "s" : ""}`;
+  $("brfiles").innerHTML = files;
+}
+function openBrowser(field){
+  brField = field;
+  $("brtitle").firstChild.textContent = ({alt_files_dir: "Folder of audio files for the alternative input", archive_dir: "Hourly archive folder",
+    spool_dir: "Buffer folder", grabs_dir: "Saved grabs folder"}[field] || "Choose a folder") + " ";
+  $("browser").classList.add("on");
+  browseTo($("f_" + field).value.trim()).then(() => $("bruse").focus());
+}
+function closeBrowser(){ $("browser").classList.remove("on"); brField = null; }
+$("brlist").addEventListener("click", e => { const b = e.target.closest("[data-brgo]"); if (b) browseTo(b.dataset.brgo); });
+$("brroots").addEventListener("click", e => { const b = e.target.closest("[data-brgo]"); if (b) browseTo(b.dataset.brgo); });
+$("brgo").onclick = () => browseTo($("brpath").value.trim());
+$("brpath").addEventListener("keydown", e => { if (e.key === "Enter"){ e.preventDefault(); browseTo($("brpath").value.trim()); } });
+$("brcancel").onclick = closeBrowser;
+$("browser").addEventListener("click", e => { if (e.target === $("browser")) closeBrowser(); });
+$("bruse").onclick = () => {
+  if (!brCur || !brField) return;
+  const el = $("f_" + brField);
+  el.value = brCur.path;
+  el.dispatchEvent(new Event("change", {bubbles: true}));
+  closeBrowser();
+};
+$("brmkdir").onclick = async () => {
+  if (!brCur) return;
+  const name = prompt(`New folder inside ${brCur.path}:`);
+  if (!name || !name.trim()) return;
+  try {
+    const r = await api("/api/browse/mkdir", {method:"POST", headers:{"content-type":"application/json"},
+                                            body: JSON.stringify({path: brCur.path, name: name.trim()})});
+    await browseTo(r.path);
+  } catch(e){ toast(e.message, "bad"); }
+};
+
 async function openSettings(){
   let r; try { r = await api("/api/config"); } catch(e){ return toast(e.message, "bad"); }
   cfgCache = r;
@@ -1222,6 +1305,8 @@ async function openSettings(){
       input = `<select id="f_${k}">` + o.map(([val, l]) => `<option value="${val}" ${String(val) === String(v || ((k==="device_backend" || k==="backup_device_backend" || k==="alt_device_backend")?r.default_backend:"")) ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
     } else if (type === "device"){
       input = `<div style="display:flex;gap:6px"><input type="text" list="devlist_${k}" id="f_${k}" value="${esc(String(v ?? ""))}" style="flex:1"><button class="small" data-devrefresh="${k.replace("device_name", "")}">Refresh</button></div><datalist id="devlist_${k}"></datalist>`;
+    } else if (type === "folder"){
+      input = `<div style="display:flex;gap:6px"><input type="text" id="f_${k}" value="${esc(String(v ?? ""))}" style="flex:1;min-width:0" spellcheck="false"><button class="small" data-browse="${k}">Browse…</button></div>`;
     } else if (type === "kbps"){
       input = `<select id="f_${k}">${bitrateOptions(opts, v)}</select>`;
     } else if (type === "schedule"){
@@ -1239,6 +1324,7 @@ async function openSettings(){
   }
   $("savecfg").disabled = !r.can_edit;
   renderOutputEditor(r);
+  f.querySelectorAll("[data-browse]").forEach(b => b.onclick = e => { e.preventDefault(); openBrowser(b.dataset.browse); });
   $("f_source_type").onchange = syncSource;
   $("f_backup_enabled").onchange = syncSource;
   $("f_backup_source_type").onchange = syncSource;
@@ -1393,6 +1479,7 @@ $("recbtn").onclick = async () => {
   catch(e){ toast(e.message, "bad"); }
 };
 document.addEventListener("keydown", e => {
+  if ($("browser").classList.contains("on")) { if (e.key === "Escape") closeBrowser(); return; }
   if ($("settings").classList.contains("on")) { if (e.key === "Escape") $("settings").classList.remove("on"); return; }
   const typing = ["INPUT","SELECT","TEXTAREA"].includes(document.activeElement.tagName);
   const k = e.key;

@@ -47,7 +47,7 @@ EDITABLE = [
     "split_minutes", "archive_keep_days",
     "buffer_minutes", "spool_dir", "grabs_dir", "grab_format", "grab_pattern", "grab_preroll_s",
     "silence_alert_db", "silence_alert_s", "autostart", "web_password",
-    "identify_songs", "identify_interval_s", "announce", "trusted_lan",
+    "identify_songs", "identify_interval_s", "announce", "trusted_lan", "switch_password",
     "receive_protocol", "receive_port", "receive_latency_ms", "receive_passphrase", "receive_password",
     "receive_group", "receive_sdp", "outputs",
     "backup_enabled", "backup_source_type", "backup_stream_url", "backup_device_backend", "backup_device_name",
@@ -55,13 +55,21 @@ EDITABLE = [
     "backup_receive_latency_ms", "backup_receive_passphrase", "backup_receive_password", "backup_receive_group",
     "backup_receive_sdp", "failover_after_s", "failover_silence_s", "failover_return_s",
 ]
-SECRET_FIELDS = ("web_password", "receive_password", "receive_passphrase",
+SECRET_FIELDS = ("web_password", "switch_password", "receive_password", "receive_passphrase",
                  "backup_receive_password", "backup_receive_passphrase",
                  "alt_receive_password", "alt_receive_passphrase")   # never sent back to browsers
 
 SESSION_COOKIE = "airlog_session"
 SESSION_DAYS = 30
 LOGIN_TOKEN_S = 60
+
+# The /switch page: only switches the internet outputs between the programme and the alternative input,
+# with its own password, so it can be given to commentators and reached from outside.
+SWITCH_COOKIE = "airlog_switch"
+SWITCH_PATHS = ("/switch", "/api/switch", "/api/switch/login", "/api/switch/logout")
+SWITCH_MIN_PASSWORD = 8
+SWITCH_MAX_FAILS = 5                 # wrong passwords from one address...
+SWITCH_FAIL_WINDOW_S = 15 * 60       # ...within this long lock that address out for the rest of it
 
 
 class Holder:
@@ -134,19 +142,19 @@ def create_app(holder: Holder) -> Flask:
     # ---------------------------------------------------------------- auth
     login_tokens: dict[str, float] = {}          # one-time token -> expiry (monotonic)
 
-    def session_key(pw: str) -> bytes:
+    def session_key(pw: str, label: bytes = b"airlog-session-v1") -> bytes:
         # Changing the password invalidates every session cookie.
-        return hmac.new(pw.encode(), b"airlog-session-v1", hashlib.sha256).digest()
+        return hmac.new(pw.encode(), label, hashlib.sha256).digest()
 
-    def make_session(pw: str) -> str:
+    def make_session(pw: str, label: bytes = b"airlog-session-v1") -> str:
         exp = str(int(time.time()) + SESSION_DAYS * 86400)
-        return exp + "." + hmac.new(session_key(pw), exp.encode(), hashlib.sha256).hexdigest()
+        return exp + "." + hmac.new(session_key(pw, label), exp.encode(), hashlib.sha256).hexdigest()
 
-    def valid_session(pw: str, value: str) -> bool:
+    def valid_session(pw: str, value: str, label: bytes = b"airlog-session-v1") -> bool:
         exp, _, sig = (value or "").partition(".")
         if not exp.isdigit() or int(exp) < time.time():
             return False
-        return hmac.compare_digest(sig, hmac.new(session_key(pw), exp.encode(), hashlib.sha256).hexdigest())
+        return hmac.compare_digest(sig, hmac.new(session_key(pw, label), exp.encode(), hashlib.sha256).hexdigest())
 
     @app.before_request
     def check_auth():
@@ -155,6 +163,8 @@ def create_app(holder: Holder) -> Flask:
             return None
         if request.path == "/login" or (request.path == "/api/login" and request.method == "POST"):
             return None
+        if request.path in SWITCH_PATHS:
+            return None                          # the switch page checks its own password
         if valid_session(pw, request.cookies.get(SESSION_COOKIE, "")):
             return None
         hdr = request.headers.get("Authorization", "")
@@ -226,6 +236,97 @@ def create_app(holder: Holder) -> Flask:
             resp.set_cookie(SESSION_COOKIE, make_session(pw), max_age=SESSION_DAYS * 86400,
                             httponly=True, samesite="Strict", path="/")
         return resp
+
+    # ---------------------------------------------------------------- the /switch page
+    switch_fails: dict[str, list[float]] = {}    # address -> times of wrong passwords
+
+    def switch_allowed() -> bool:
+        """The switch page's own sign-in, or anyone allowed to use the main page's switch."""
+        cfg = holder.cfg
+        if cfg.switch_password and valid_session(cfg.switch_password, request.cookies.get(SWITCH_COOKIE, ""),
+                                                 b"airlog-switch-v1"):
+            return True
+        if cfg.web_password:
+            return valid_session(cfg.web_password, request.cookies.get(SESSION_COOKIE, ""))
+        return can_admin()
+
+    def switch_view() -> dict:
+        cfg = holder.cfg
+        return {"station": cfg.station_name, "signed_in": True, "alt": holder.engine.alt_status()}
+
+    def apply_alt_state(state: str, who: str):
+        """Shared by the main page's button and the switch page. Returns an error response or None."""
+        cfg = holder.cfg
+        if not cfg.alt_enabled:
+            return err("The alternative input isn't enabled (Settings)")
+        state = "" if state == "auto" else state
+        if state not in altfeed.OVERRIDES:
+            return err("state must be alternative, programme or auto")
+        if state == "" and cfg.alt_mode != "schedule":
+            return err("'Follow the schedule' needs schedule mode")
+        if cfg.alt_mode == "permanent":
+            return err("In permanent mode the switched outputs always carry the alternative")
+        with holder.lock:
+            if who:
+                holder.engine.log(f"{who}: internet outputs set to "
+                                  + {"alternative": "the alternative input", "programme": "the programme",
+                                     "": "follow the schedule"}[state])
+            holder.engine.set_alt_override(state)
+            cfg.save(holder.cfg_path)
+        return None
+
+    @app.get("/switch")
+    def switch_page():
+        resp = send_from_directory(WEB_DIR, "switch.html")
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+    @app.get("/api/switch")
+    def switch_status():
+        if not switch_allowed():
+            return jsonify(signed_in=False, available=bool(holder.cfg.switch_password)), 401
+        return jsonify(switch_view())
+
+    @app.post("/api/switch/login")
+    def switch_login():
+        cfg = holder.cfg
+        ip = request.remote_addr or "?"
+        if not cfg.switch_password:
+            return err("The switch page isn't turned on. Set a switch page password in Airlog's settings", 403)
+        now = time.monotonic()
+        fails = [t for t in switch_fails.get(ip, []) if now - t < SWITCH_FAIL_WINDOW_S]
+        switch_fails[ip] = fails
+        if len(fails) >= SWITCH_MAX_FAILS:
+            mins = max(1, round((SWITCH_FAIL_WINDOW_S - (now - fails[0])) / 60))
+            return err(f"Too many wrong passwords. Try again in {mins} minute{'s' if mins > 1 else ''}", 429)
+        given = str((request.get_json(silent=True) or {}).get("password", ""))
+        if not hmac.compare_digest(given.encode(), cfg.switch_password.encode()):
+            fails.append(now)
+            if len(fails) >= SWITCH_MAX_FAILS:
+                holder.engine.log(f"Switch page: {len(fails)} wrong passwords from {ip}; "
+                                  f"locked out for {SWITCH_FAIL_WINDOW_S // 60} minutes", error=True)
+            time.sleep(1)                        # slow down guessing
+            return err("Wrong password", 403)
+        switch_fails.pop(ip, None)
+        resp = jsonify(switch_view())
+        resp.set_cookie(SWITCH_COOKIE, make_session(cfg.switch_password, b"airlog-switch-v1"),
+                        max_age=SESSION_DAYS * 86400, httponly=True, samesite="Strict", path="/",
+                        secure=request.is_secure)
+        return resp
+
+    @app.post("/api/switch/logout")
+    def switch_logout():
+        resp = jsonify(ok=True)
+        resp.delete_cookie(SWITCH_COOKIE, path="/")
+        return resp
+
+    @app.post("/api/switch")
+    def switch_set():
+        if not switch_allowed():
+            return err("Signed out: enter the switch page password again", 401)
+        bad = apply_alt_state(str((request.get_json(silent=True) or {}).get("state", "")),
+                              f"Switch page ({request.remote_addr})")
+        return bad or jsonify(switch_view())
 
     # ---------------------------------------------------------------- pages
     @app.get("/")
@@ -508,6 +609,12 @@ def create_app(holder: Holder) -> Flask:
         trial = copy.copy(cfg)
         for k, v in new.items():
             setattr(trial, k, v)
+        if trial.switch_password:
+            if len(trial.switch_password) < SWITCH_MIN_PASSWORD:
+                return err(f"The switch page password needs at least {SWITCH_MIN_PASSWORD} characters: "
+                           "it can be tried from the internet")
+            if trial.switch_password == trial.web_password:
+                return err("The switch page password must be different from the web password")
         if trial.source_type == "receive":
             try:
                 sources.receive_args(trial)
@@ -565,21 +672,101 @@ def create_app(holder: Holder) -> Flask:
         so a restart keeps it; applied at once, without restarting the recorder."""
         if not can_admin():
             return err(ADMIN_REFUSED, 403)
-        cfg = holder.cfg
-        if not cfg.alt_enabled:
-            return err("The alternative input isn't enabled (Settings)")
-        state = str((request.get_json(silent=True) or {}).get("state", ""))
-        state = "" if state == "auto" else state
-        if state not in altfeed.OVERRIDES:
-            return err("state must be alternative, programme or auto")
-        if state == "" and cfg.alt_mode != "schedule":
-            return err("'Follow the schedule' needs schedule mode")
-        if cfg.alt_mode == "permanent":
-            return err("In permanent mode the switched outputs always carry the alternative")
-        with holder.lock:
-            holder.engine.set_alt_override(state)
-            cfg.save(holder.cfg_path)
-        return jsonify(ok=True, alt=holder.engine.alt_status())
+        bad = apply_alt_state(str((request.get_json(silent=True) or {}).get("state", "")), "")
+        return bad or jsonify(ok=True, alt=holder.engine.alt_status())
+
+    # ---------------------------------------------------------------- folder browser (settings)
+    def browse_roots() -> list[dict]:
+        """Places to start: home, and the drives (Windows) or mount points (Linux/macOS)."""
+        roots = [{"label": "Home", "path": str(Path.home())}]
+        if os.name == "nt":
+            import string
+            for letter in string.ascii_uppercase:
+                d = f"{letter}:\\"
+                if os.path.exists(d):
+                    roots.append({"label": f"{letter}:", "path": d})
+        else:
+            roots.append({"label": "/", "path": "/"})
+            for base in ("/Volumes", "/media", "/mnt", "/run/media"):
+                b = Path(base)
+                try:
+                    kids = [k for k in b.iterdir() if k.is_dir() and not k.name.startswith(".")] if b.is_dir() else []
+                except OSError:
+                    kids = []
+                for k in sorted(kids)[:20]:
+                    # /media/<user>/<disk> on Ubuntu: offer the disks, not the user folder
+                    sub = []
+                    if base in ("/media", "/run/media") and k.name == os.environ.get("USER", ""):
+                        try:
+                            sub = sorted(x for x in k.iterdir() if x.is_dir())
+                        except OSError:
+                            pass
+                    for x in sub or [k]:
+                        roots.append({"label": x.name, "path": str(x)})
+        return roots
+
+    SKIP_DIRS = {"$RECYCLE.BIN", "System Volume Information", "lost+found"}
+
+    @app.get("/api/browse")
+    def browse():
+        """Folders on the recorder, for picking a folder in Settings: sub-folders, plus the audio files
+        in it (so a folder for the alternative input can be checked before choosing it)."""
+        if not can_admin():
+            return err(ADMIN_REFUSED, 403)
+        raw = (request.args.get("path") or "").strip()
+        p = Path(os.path.expanduser(raw)) if raw else Path.home()
+        if not p.is_absolute():
+            p = Path.home() / p
+        # A folder that doesn't exist yet (typed in, or not created): start from the nearest one that does.
+        while not p.is_dir() and p.parent != p:
+            p = p.parent
+        p = p.resolve()
+        dirs, audio, others, error = [], [], 0, ""
+        try:
+            for e in os.scandir(p):
+                name = e.name
+                try:
+                    if e.is_dir():
+                        if not name.startswith(".") and name not in SKIP_DIRS:
+                            dirs.append(name)
+                    elif e.is_file():
+                        if Path(name).suffix.lower() in sources.AUDIO_EXT:
+                            audio.append(name)
+                        elif not name.startswith("."):
+                            others += 1
+                except OSError:
+                    continue
+        except PermissionError:
+            error = "Airlog isn't allowed to read this folder"
+        except OSError as ex:
+            error = f"Can't read this folder ({ex.strerror or ex})"
+        key = str.casefold
+        dirs.sort(key=key)
+        audio.sort(key=key)
+        parent = str(p.parent) if p.parent != p else None
+        return jsonify(path=str(p), parent=parent, sep=os.sep, dirs=dirs[:2000], audio=audio[:500],
+                       audio_count=len(audio), other_count=others, truncated=len(dirs) > 2000,
+                       error=error, roots=browse_roots())
+
+    @app.post("/api/browse/mkdir")
+    def browse_mkdir():
+        if not can_admin():
+            return err(ADMIN_REFUSED, 403)
+        data = request.get_json(silent=True) or {}
+        base = Path(str(data.get("path", "")))
+        name = str(data.get("name", "")).strip()
+        if not base.is_absolute() or not base.is_dir():
+            return err("That folder doesn't exist")
+        if not name or name in (".", "..") or any(c in name for c in '/\\:*?"<>|') or len(name) > 120:
+            return err("Folder names can't be blank or contain / \\ : * ? \" < > |")
+        new = base / name
+        try:
+            new.mkdir()
+        except FileExistsError:
+            return err(f"There's already a folder called {name}")
+        except OSError as ex:
+            return err(f"Couldn't create it ({ex.strerror or ex})")
+        return jsonify(ok=True, path=str(new))
 
     @app.get("/api/output_devices")
     def output_devices():

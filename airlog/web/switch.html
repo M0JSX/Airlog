@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Internet switch · Airlog</title>
+<link rel="icon" href="/favicon.ico">
+<style>
+:root{
+  --bg:#16181d; --panel:#1e2128; --panel2:#262a33; --line:#2c313b; --fg:#e6e8ec; --dim:#8b93a1;
+  --amber:#f5a623; --amber2:#ffb945; --red:#e5484d; --green:#46a758; --blue:#3e7bd6;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:520px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:15px;font-weight:600;color:var(--dim);margin:0 0 14px;display:flex;justify-content:space-between;gap:10px}
+h1 a{color:var(--dim);font-weight:400}
+.state{border-radius:12px;padding:22px 18px;background:var(--panel);border:2px solid var(--line);margin-bottom:16px}
+.state .cap{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.state .big{font-size:26px;font-weight:800;line-height:1.15;margin:6px 0 8px}
+.state.prog{border-color:var(--blue)}
+.state.prog .big{color:#8fb6f2}
+.state.alt{border-color:var(--amber);background:#2a2316}
+.state.alt .big{color:var(--amber)}
+.state p{margin:4px 0 0;color:var(--dim);font-size:14px}
+.warn{color:var(--red)!important;font-weight:600}
+button{font:inherit;font-weight:700;width:100%;border-radius:12px;border:0;padding:18px 14px;margin:0 0 10px;cursor:pointer;color:#111;min-height:64px}
+button.alt{background:var(--amber)}
+button.alt:hover{background:var(--amber2)}
+button.prog{background:var(--panel2);color:var(--fg);border:1px solid var(--line)}
+button.prog.armed{background:var(--red);color:#fff;border-color:var(--red)}
+button.sched{background:var(--panel2);color:var(--fg);border:1px solid var(--line);font-weight:600}
+button:disabled{opacity:.55;cursor:default}
+form{background:var(--panel);border-radius:12px;padding:18px}
+label{display:block;color:var(--dim);font-size:14px;margin-bottom:6px}
+input{font:inherit;width:100%;color:var(--fg);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
+form button{background:var(--amber);min-height:52px;padding:12px}
+.msg{min-height:1.4em;font-size:14px;margin:8px 0 0}
+.msg.bad{color:var(--red)} .msg.ok{color:var(--green)}
+.foot{color:var(--dim);font-size:13px;margin-top:18px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <h1><span id="station">Airlog</span><a href="#" id="signout" hidden>Sign out</a></h1>
+
+  <form id="login" hidden autocomplete="on">
+    <p style="margin:0 0 14px">Sign in to switch the internet stream.</p>
+    <label for="pw">Password</label>
+    <input type="password" id="pw" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+    <div class="msg" id="loginmsg" role="alert"></div>
+  </form>
+
+  <div id="off" class="state" hidden>
+    <div class="big" style="font-size:20px">Not available</div>
+    <p id="offwhy"></p>
+  </div>
+
+  <section id="panel" hidden>
+    <div class="state" id="state" aria-live="polite">
+      <div class="cap">The internet stream is carrying</div>
+      <div class="big" id="big">…</div>
+      <p id="detail"></p>
+      <p id="input"></p>
+    </div>
+    <button class="alt" id="b-alt" data-state="alternative">Take the programme off the internet</button>
+    <button class="prog" id="b-prog" data-state="programme">Put the programme back on the internet</button>
+    <button class="sched" id="b-sched" data-state="auto">Follow the schedule again</button>
+    <div class="msg" id="msg" role="alert"></div>
+    <p class="foot">This only changes the internet stream. The hospital service and the recording always carry the programme.</p>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let view = null, busy = false, armed = null;
+
+function time(iso){ return new Date(iso).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+function when(iso){
+  const d = new Date(iso);
+  return d.toDateString() === new Date().toDateString() ? time(iso)
+    : d.toLocaleDateString([], {weekday: "short", day: "numeric", month: "short"}) + " " + time(iso);
+}
+function show(which){
+  $("login").hidden = which !== "login";
+  $("panel").hidden = which !== "panel";
+  $("off").hidden = which !== "off";
+  $("signout").hidden = which !== "panel";
+}
+function render(){
+  const a = view.alt;
+  $("station").textContent = view.station || "Airlog";
+  document.title = `Internet switch · ${view.station || "Airlog"}`;
+  if (!a){
+    $("offwhy").textContent = "The alternative input isn't set up on this recorder. Ask the station to turn it on in Airlog's settings.";
+    return show("off");
+  }
+  show("panel");
+  const on = a.on, inp = a.input || {};
+  $("state").className = "state " + (on ? "alt" : "prog");
+  $("big").textContent = on ? "The alternative: the programme is NOT going online" : "The programme";
+  let d = "";
+  if (a.mode === "permanent") d = "Set to always carry the alternative. Only the station can change that.";
+  else if (a.mode === "schedule"){
+    if (a.override) d = `Switched by hand: the schedule is paused until someone presses “Follow the schedule again”.`;
+    else if (a.until) d = `Scheduled until ${when(a.until.at)}${a.until.label ? ` (${a.until.label})` : ""}.`;
+    else d = "Following the schedule.";
+    if (!on && a.next) d += ` Next: ${a.next.label ? a.next.label + ", " : ""}${when(a.next.start)}–${time(a.next.end)}.`;
+  }
+  $("detail").textContent = d;
+  const bad = on && inp.status && inp.status !== "recording";
+  $("input").textContent = bad ? "⚠ The alternative input isn't working, so the internet stream is sending silence."
+    : on && inp.playing ? `Playing: ${inp.playing}` : "";
+  $("input").className = bad ? "warn" : "";
+  const fixed = a.mode === "permanent";
+  $("b-alt").hidden = fixed || on;
+  $("b-prog").hidden = fixed || !on;
+  $("b-sched").hidden = a.mode !== "schedule" || !a.override;
+  for (const b of document.querySelectorAll("#panel button")) b.disabled = busy;
+  if (armed !== "programme") disarm();
+}
+function disarm(){
+  armed = null;
+  $("b-prog").classList.remove("armed");
+  $("b-prog").textContent = "Put the programme back on the internet";
+}
+function msg(t, kind){ $("msg").textContent = t || ""; $("msg").className = "msg " + (kind || ""); }
+
+async function call(url, body){
+  const r = await fetch(url, body === undefined ? {cache: "no-store"} :
+    {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
+  let j = {};
+  try { j = await r.json(); } catch(e){}
+  return {status: r.status, j};
+}
+async function poll(){
+  try {
+    const {status, j} = await call("/api/switch");
+    if (status === 401){
+      view = null;
+      if (!j.available){
+        $("offwhy").textContent = "The switch page isn't turned on. The station can set a switch page password in Airlog's settings.";
+        show("off");
+      } else if ($("login").hidden){ show("login"); $("pw").focus(); }
+      return;
+    }
+    if (status === 200){ view = j; if (!busy) render(); }
+  } catch(e){
+    if (view) msg("Can't reach the recorder. Retrying…", "bad");
+  }
+}
+async function setState(state){
+  busy = true; render(); msg("Switching…");
+  try {
+    const {status, j} = await call("/api/switch", {state});
+    if (status === 401){ view = null; show("login"); msg(""); return; }
+    if (status !== 200) return msg(j.error || "Couldn't switch", "bad");
+    view = j;
+    msg(view.alt && view.alt.on ? "Done: the programme is off the internet." : "Done: the internet stream follows "
+        + (state === "auto" ? "the schedule." : "the programme."), "ok");
+  } catch(e){
+    msg("Can't reach the recorder: nothing was changed. Try again.", "bad");
+  } finally {
+    busy = false; disarm(); if (view) render();
+  }
+}
+$("panel").addEventListener("click", e => {
+  const b = e.target.closest("button[data-state]"); if (!b || busy) return;
+  const state = b.dataset.state;
+  if (state === "programme" && armed !== "programme"){
+    // Two taps: putting the programme back online by mistake mid-commentary is the thing to avoid.
+    armed = "programme";
+    b.classList.add("armed");
+    b.textContent = "Tap again: commentary over, programme back online";
+    setTimeout(() => { if (armed === "programme" && !busy) disarm(); }, 5000);
+    return;
+  }
+  setState(state);
+});
+$("login").addEventListener("submit", async e => {
+  e.preventDefault();
+  const btn = $("login").querySelector("button");
+  btn.disabled = true; $("loginmsg").textContent = "";
+  try {
+    const {status, j} = await call("/api/switch/login", {password: $("pw").value});
+    if (status === 200){ $("pw").value = ""; view = j; msg(""); render(); }
+    else { $("loginmsg").textContent = j.error || "Couldn't sign in"; $("loginmsg").className = "msg bad"; }
+  } catch(e){
+    $("loginmsg").textContent = "Can't reach the recorder"; $("loginmsg").className = "msg bad";
+  } finally { btn.disabled = false; }
+});
+$("signout").addEventListener("click", async e => {
+  e.preventDefault();
+  await call("/api/switch/logout", {}).catch(() => {});
+  view = null; show("login");
+});
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>
