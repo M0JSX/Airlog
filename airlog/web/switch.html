@@ -106,7 +106,7 @@ function render(){
   show("panel");
   const on = a.on, inp = a.input || {};
   $("state").className = "state " + (on ? "alt" : "prog");
-  $("big").textContent = on ? "The alternative: the programme is NOT going online" : "The programme";
+  $("big").textContent = on ? "The alternative: the programme is NOT going online" : "Programme Feed";
   let d = "";
   if (a.mode === "permanent") d = "Set to always carry the alternative. Only the station can change that.";
   else if (a.mode === "schedule"){
