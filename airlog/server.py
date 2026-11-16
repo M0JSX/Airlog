@@ -46,7 +46,7 @@ EDITABLE = [
     "archive_enabled", "archive_dir", "archive_pattern", "archive_format", "archive_bitrate_kbps",
     "split_minutes", "archive_keep_days",
     "buffer_minutes", "spool_dir", "grabs_dir", "grab_format", "grab_pattern", "grab_preroll_s",
-    "silence_alert_db", "silence_alert_s", "autostart", "web_password",
+    "silence_alert_db", "silence_alert_s", "autostart", "default_view", "split_controls", "web_password",
     "identify_songs", "identify_interval_s", "announce", "trusted_lan", "switch_password", "switch_port", "switch_note", "lan_switch",
     "receive_protocol", "receive_port", "receive_latency_ms", "receive_passphrase", "receive_password",
     "receive_group", "receive_sdp", "outputs",
@@ -116,7 +116,7 @@ class Holder:
             self.engine = self._new_engine()
             for line in old.logs:          # keep the log continuous across restarts
                 self.engine.logs.append(line)
-            if start:
+            if start and not self.engine.idle():
                 self.engine.start()
         self.announce()             # station name / password / on-off may have changed
 
@@ -503,6 +503,10 @@ def create_app(holder: Holder) -> Flask:
             tracks_rev=e.tracks.rev,
             can_edit=can_admin(),
             can_switch=can_switch(),
+            default_view=cfg.default_view,
+            split_controls=cfg.split_controls,
+            streaming=bool(e.running and e.outputs.streaming),
+            streaming_wanted=e.streaming_wanted(),
             outputs=e.outputs.status(),
             failover=e.failover_status(),
             alt=e.alt_status(),
@@ -655,6 +659,27 @@ def create_app(holder: Holder) -> Flask:
             return err("action must be start or stop")
         return jsonify(ok=True)
 
+    @app.post("/api/run")
+    def run():
+        """The separate buttons: {"what": "recording" | "streaming", "on": true | false}. Applied live
+        (the other one carries on) and saved, so a restart comes back the same way."""
+        if not can_admin():
+            return err(ADMIN_REFUSED, 403)
+        body = request.get_json(silent=True) or {}
+        what, on = body.get("what"), body.get("on")
+        if what not in ("recording", "streaming") or not isinstance(on, bool):
+            return err('what must be "recording" or "streaming", and on true or false')
+        with holder.lock:
+            e, cfg = holder.engine, holder.cfg
+            if what == "streaming" and not cfg.split_controls:
+                return err("Separate recording and streaming buttons are off (Settings → General)")
+            if what == "recording":
+                e.set_recording(on)
+            else:
+                e.set_streaming(on)
+            cfg.save(holder.cfg_path)
+        return jsonify(ok=True)
+
     @app.post("/api/outputs/<oid>")
     def output_switch(oid: str):
         """Turn one output on or off from the main page: saved to the config, applied straight away,
@@ -745,6 +770,10 @@ def create_app(holder: Holder) -> Flask:
                 return err("The switch page password must be different from the web password")
         if len(trial.switch_note) > 600:
             return err("The switch page note is too long (600 characters at most)")
+        if trial.default_view not in ("full", "simple"):
+            return err("Main page layout must be full or simple")
+        if not trial.split_controls:
+            new["streaming_enabled"] = True       # one button again: the outputs always go with it
         sp = int(trial.switch_port or 0)
         if sp:
             if not 1024 <= sp <= 65535:
@@ -956,7 +985,7 @@ def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, on_signal)
     holder = Holder(cfg, cfg_path)
-    if cfg.autostart:
+    if cfg.autostart and not holder.engine.idle():
         holder.engine.start()
     holder.start_announcing()
     holder.serve_switch_page()

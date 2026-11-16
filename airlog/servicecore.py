@@ -39,7 +39,7 @@ def serve_until(config_path: Path, wait) -> None:
     if not config_path.exists():
         cfg.save(config_path)
     holder = Holder(cfg, config_path)
-    if cfg.autostart:
+    if cfg.autostart and not holder.engine.idle():
         holder.engine.start()
     holder.start_announcing()
     holder.serve_switch_page()

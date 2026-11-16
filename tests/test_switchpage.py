@@ -206,6 +206,5 @@ bp = busy.getsockname()[1]
 assert admin.post("/api/config", json={"switch_password": "new-season-2027", "switch_port": bp}).status_code == 200
 assert settle(lambda: f"can't listen on port {bp}" in "\n".join(holder.engine.logs)), list(holder.engine.logs)[-5:]
 busy.close()
-holder.switch_listener.stop()
-holder.engine.stop()
-print("switch page OK")
+from _finish import finish  # noqa: E402
+finish(holder, "switch page OK")

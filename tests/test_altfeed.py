@@ -289,11 +289,11 @@ r = cl.post("/api/config", json={"alt_mode": "schedule", "alt_schedule": in_wind
 assert r.status_code == 200, r.get_json()
 saved = json.loads((tmp / "config.json").read_text())
 assert saved["alt_schedule"][0]["label"] == "Match" and saved["alt_override"] == "alternative"
-holder.engine.stop()
 old = tmp / "old.json"                            # 1.6.13's default note moves to the new default
 old.write_text(json.dumps({"switch_note": "This only changes the internet stream. The hospital service and "
                                           "the recording always carry the programme."}))
 assert Config.load(old).switch_note == "This only changes the internet stream."
 old.write_text(json.dumps({"switch_note": "Ring Dave"}))
 assert Config.load(old).switch_note == "Ring Dave"
-print("altfeed OK")
+from _finish import finish  # noqa: E402
+finish(holder, "altfeed OK")

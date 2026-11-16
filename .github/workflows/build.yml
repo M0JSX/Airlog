@@ -83,6 +83,8 @@ jobs:
 
       - name: Unit tests
         run: |
+          # A real Icecast server for tests/test_icecast.py (the other streaming tests use fakes)
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends icecast2
           export PATH="$(ls -d "$PWD"/.build/ffmpeg-linux-*):$PATH"
           for t in tests/test_*.py; do .build/venv-linux-*/bin/python "$t"; done
 

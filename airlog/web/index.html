@@ -39,6 +39,7 @@ header{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:s
 #clock{font:700 28px var(--mono)}
 #silence{color:var(--red);font-weight:700;font-size:13px;text-align:right;min-height:1.2em}
 .hbtns{display:flex;flex-direction:column;gap:6px}
+[hidden]{display:none!important}
 
 main{padding:14px 18px 18px;display:flex;flex-direction:column;gap:12px}
 .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -139,6 +140,29 @@ footer{display:flex;justify-content:space-between;color:var(--dim);font-size:12p
 tr.playing td{color:var(--amber)}
 td a{color:inherit}
 kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding:0 4px;color:var(--dim)}
+/* Simple view: the header, and an at-a-glance panel instead of the timeline, grabs and tabs */
+#simple{display:none}
+body.simple #simple{display:block}
+body.simple main > :not(#simple){display:none !important}
+.verdict{border:2px solid var(--line);border-radius:12px;padding:18px 22px;margin-bottom:14px;background:var(--panel)}
+.verdict.ok{border-color:var(--green);background:#17251b}
+.verdict.warn{border-color:var(--amber);background:#2a2316}
+.verdict.bad{border-color:var(--red);background:#2b1718}
+.vbig{font-size:28px;font-weight:800;line-height:1.15}
+.verdict.ok .vbig{color:var(--green)} .verdict.warn .vbig{color:var(--amber)} .verdict.bad .vbig{color:var(--red)}
+.vsub{color:var(--fg);margin-top:4px;font-size:15px}
+.verdict ul{margin:10px 0 0;padding-left:20px;font-size:15px}
+.verdict li{margin:3px 0}
+.verdict li.bad{color:#ff9a9d} .verdict li.warn{color:var(--amber2)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
+.tile .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);display:flex;gap:6px;align-items:center;overflow:hidden}
+.tile .k span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile .v{font-size:19px;font-weight:700;margin:4px 0 2px}
+.tile .d{font-size:13px;color:var(--dim);overflow-wrap:anywhere}
+.lvl{height:6px;border-radius:3px;background:#101216;margin-top:8px;overflow:hidden}
+.lvl i{display:block;height:100%;background:var(--green);border-radius:3px;transition:width .15s}
+.simplebar{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;align-items:center}
 </style>
 </head>
 <body>
@@ -159,12 +183,24 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:3px;padding
     <div><div id="clock">--:--:--</div><div id="silence"></div></div>
     <div class="hbtns">
       <button id="recbtn" class="rec">● Record</button>
+      <button id="recbtn2" class="rec" hidden>● Start Recording</button>
+      <button id="streambtn" hidden>▶ Start Streaming</button>
+      <button id="viewbtn" title="Switch between the full page and a simple status view (remembered in this browser)">Simple view</button>
       <button id="setbtn">Settings</button>
     </div>
   </div>
 </header>
 
 <main>
+  <section id="simple" aria-live="polite">
+    <div class="verdict" id="verdict"><div class="vbig">Connecting…</div></div>
+    <div class="tiles" id="tiles"></div>
+    <div class="simplebar">
+      <button id="slisten">🔊 Listen live</button>
+      <button id="sfull">Show everything: timeline, grabs, songs, log</button>
+    </div>
+  </section>
+
   <div class="toolbar">
     <strong>Timeline</strong>
     <span class="dim">drag to select · scroll or swipe to move · pinch or Ctrl+wheel zooms · double-click: whole hour</span>
@@ -358,7 +394,8 @@ function renderOutputs(list){
   const icon = {connected:["●","ok"], sending:["●","ok"], playing:["●","ok"], connecting:["○","warn"], waiting:["○","warn"], error:["⚠","bad"], off:["○","dim"], starting:["○","dim"]};
   const html = list.map(o => {
     const [i, c] = icon[o.state] || ["○", "dim"];
-    const what = {connected:"connected", sending:"sending", playing:"playing", connecting:"connecting…", waiting:"waiting for a receiver", error:o.detail, off:"off", starting:"starting"}[o.state] || o.state;
+    let what = {connected:"connected", sending:"sending", playing:"playing", connecting:"connecting…", waiting:"waiting for a receiver", error:o.detail, off:"off", starting:"starting"}[o.state] || o.state;
+    if (st && st.split_controls && !st.streaming_wanted && o.enabled !== false) what = "streaming stopped";
     const tip = `${o.target} · ${o.codec}` + (o.processing ? ` · ${o.processing}` : "") + (o.detail && o.state !== "error" ? ` · ${o.detail}` : "") + (o.dropped ? ` · ${o.dropped} blocks dropped (network too slow?)` : "");
     const on = o.enabled !== false, locked = st && st.can_edit === false;
     const sw = `<button class="sw${on ? " on" : ""}" data-outsw="${esc(o.id)}" data-on="${on ? 1 : 0}" data-name="${esc(o.name)}" role="switch" aria-checked="${on}" `
@@ -450,6 +487,130 @@ $("altbar").addEventListener("click", async e => {
   }
 });
 
+// ------------------------------------------------------------ simple view
+// Simple: the header plus one verdict ("All good" or what's wrong) and a tile per part. Chosen per browser
+// (remembered), or ?view=simple / ?view=full in the address; otherwise the recorder's default.
+let viewChoice = (() => {
+  const q = new URLSearchParams(location.search).get("view");
+  if (q === "simple" || q === "full") return q;
+  try { const v = localStorage.getItem("airlog.view"); if (v === "simple" || v === "full") return v; } catch(e){}
+  return null;
+})();
+function isSimple(){ return document.body.classList.contains("simple"); }
+function setView(v, save){
+  document.body.classList.toggle("simple", v === "simple");
+  $("viewbtn").textContent = v === "simple" ? "Full view" : "Simple view";
+  if (save){
+    viewChoice = v;
+    try { localStorage.setItem("airlog.view", v); } catch(e){}
+  }
+  if (v === "full"){ peakDirty = true; }
+  if (st) renderSimple(st);
+}
+if (viewChoice) setView(viewChoice, false);
+$("viewbtn").onclick = () => setView(isSimple() ? "full" : "simple", true);
+$("sfull").onclick = () => setView("full", true);
+$("slisten").onclick = () => listenLive();
+
+function ago(sec){
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return `${sec} s`;
+  const m = Math.floor(sec / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d) return `${d} day${d > 1 ? "s" : ""} ${h % 24} h`;
+  return h ? `${h} h ${m % 60} min` : `${m} min`;
+}
+// What's wrong, worst first: [severity, text]. Nothing = all good.
+function problems(s){
+  const out = [], fo = s.failover, onBackup = fo && fo.active === "backup";
+  if (s.status === "stopped") out.push(["bad", s.split_controls ? "Stopped: press Start Recording or Start Streaming"
+                                                                  : `Stopped: press ● ${s.archive_enabled ? "Record" : "Start"}`]);
+  else if (s.status !== "recording"){
+    const what = {starting: "Connecting to the source", reconnecting: "Lost the source: reconnecting",
+                  waiting: "Waiting for the sender", error: "Problem with the source"}[s.status] || s.status;
+    out.push([s.status === "starting" || s.status === "waiting" ? "warn" : "bad", what + (s.last_error ? `: ${s.last_error}` : "")]);
+  }
+  if (onBackup){
+    const last = fo.switches.length ? fo.switches[fo.switches.length - 1] : null;
+    out.push(["warn", "Running on the backup source" + (last ? ` since ${hms(last.time, false).slice(0, 5)} (${last.reason})` : "")]);
+  } else if (fo && !["recording", "waiting"].includes(fo.backup.status)){
+    out.push(["warn", `The backup source isn't ready (${fo.backup.status})`]);
+  }
+  if (s.status === "recording" && s.silence_s >= s.silence_alert_s) out.push(["warn", `Silence for ${ago(s.silence_s)}`]);
+  for (const o of s.outputs || []){
+    if (o.enabled === false || !s.streaming_wanted) continue;
+    if (o.state === "error") out.push(["bad", `${o.name}: ${o.detail || "problem"}`]);
+    else if (o.state === "connecting" || o.state === "starting") out.push(["warn", `${o.name}: connecting…`]);
+    else if (o.state === "waiting") out.push(["warn", `${o.name}: waiting for a receiver`]);
+  }
+  const a = s.alt;
+  if (a && a.on && a.input && a.input.status !== "recording")
+    out.push(["bad", "The alternative input isn't working: the internet outputs are sending silence"]);
+  return out.sort((x, y) => (x[0] === "bad" ? 0 : 1) - (y[0] === "bad" ? 0 : 1));
+}
+function renderSimple(s, offline){
+  if (!isSimple()) return;
+  const v = $("verdict"), outs = (s && s.outputs) || [];
+  let cls, big, sub = "", list = [];
+  if (offline){
+    cls = "bad"; big = "Can't reach the recorder"; sub = offline;
+  } else {
+    list = problems(s);
+    const on = outs.filter(o => o.enabled !== false), off = outs.length - on.length;
+    const live = s.status === "recording", streamOn = s.streaming_wanted !== false;
+    const doing = !live ? "" : s.archive_enabled ? "Recording" : streamOn ? "Streaming, not saving recordings" : "Not recording or streaming";
+    sub = [doing, live && streamOn && on.length ? `sending to ${on.length} output${on.length > 1 ? "s" : ""}`
+                : live && !streamOn && outs.length ? "not streaming" : (live && !s.archive_enabled ? "no outputs on" : ""),
+           streamOn && off ? `${off} switched off` : ""].filter(Boolean).join(" · ");
+    sub = sub.charAt(0).toUpperCase() + sub.slice(1);
+    cls = !list.length ? "ok" : list.some(x => x[0] === "bad") ? "bad" : "warn";
+    big = {ok: "✓ All good", warn: "⚠ Check", bad: "✕ Needs attention"}[cls];
+  }
+  const vh = `<div class="vbig">${big}</div>` + (sub ? `<div class="vsub">${esc(sub)}</div>` : "") +
+    (list.length ? `<ul>${list.map(([c, t]) => `<li class="${c}">${esc(t)}</li>`).join("")}</ul>` : "");
+  if (v.dataset.html !== vh){ v.innerHTML = vh; v.dataset.html = vh; }
+  v.className = "verdict " + cls;
+  if (offline || !s){ $("tiles").innerHTML = ""; return; }
+
+  const tile = (k, val, d, extra = "") => `<div class="tile"><div class="k">${k}</div><div class="v">${val}</div>` +
+    (d ? `<div class="d">${d}</div>` : "") + extra + `</div>`;
+  const now = s.server_time, t = [];
+  const word = {recording: s.archive_enabled ? "Recording" : "Live, not recording", starting: "Connecting…",
+                reconnecting: "Reconnecting…", waiting: "Waiting for a sender", error: "Problem", stopped: "Stopped"};
+  t.push(tile("<span>Recorder</span>", esc(word[s.status] || s.status),
+    s.archive ? esc(`${s.archive.name} · ${ago(now - s.archive.start)} so far`)
+              : esc(s.archive_enabled ? "" : "Archive off: recordings aren't being saved")));
+  const fo = s.failover, onBackup = fo && fo.active === "backup";
+  const peak = Math.max(...(s.level || [-90, -90]));
+  const lvl = s.status === "recording" ? `<div class="lvl"><i style="width:${Math.round(Math.max(0, Math.min(1, (peak + 48) / 48)) * 100)}%"></i></div>` : "";
+  const silent = s.status === "recording" && s.silence_s >= 5 ? ` · silent ${ago(s.silence_s)}` : "";
+  t.push(tile("<span>Source</span>", onBackup ? "On backup" : s.status === "recording" ? "Connected" : esc(word[s.status] || s.status),
+    esc((onBackup ? fo.backup.source : s.source) + silent) + (fo && !onBackup ? `<br>Backup: ${esc(fo.backup.status === "recording" ? "standing by" : fo.backup.status)}` : ""), lvl));
+  const sw = {connected: "Connected", sending: "Sending", playing: "Playing", connecting: "Connecting…", waiting: "Waiting for a receiver",
+              error: "Problem", off: "Switched off", starting: "Starting"};
+  for (const o of outs){
+    const ok = ["connected", "sending", "playing"].includes(o.state) && o.enabled !== false;
+    if (s.streaming_wanted === false){
+      t.push(tile(`<span>${esc(o.name)}</span>`, '<span class="dim">Not streaming</span>', "Streaming is stopped (Start Streaming)"));
+      continue;
+    }
+    const d = o.enabled === false ? "Switched off on this page or in Settings"
+            : o.state === "error" ? esc(o.detail || "")
+            : esc(o.target) + (ok && o.since ? ` · for ${ago(now - o.since)}` : "");
+    const alt = o.on_alt ? ` <span class="alttag">ALT</span>` : "";
+    t.push(tile(`<span>${esc(o.name)}</span>${alt}`,
+      `<span class="${o.enabled === false ? "dim" : ok ? "ok" : o.state === "error" ? "bad" : "warn"}">${esc(sw[o.state] || o.state)}</span>`, d));
+  }
+  if (s.alt){
+    const a = s.alt;
+    t.push(tile("<span>Internet outputs carry</span>", a.on ? '<span class="warn">Alternative input</span>' : "Programme",
+      esc(a.until ? `until ${altWhen(a.until.at)}${a.until.label ? " (" + a.until.label + ")" : ""}`
+          : !a.on && a.next ? `next: ${a.next.label ? a.next.label + " " : ""}${altWhen(a.next.start)}` : a.mode === "permanent" ? "always" : "")));
+  }
+  const th = t.join("");
+  if ($("tiles").dataset.html !== th){ $("tiles").innerHTML = th; $("tiles").dataset.html = th; }
+  $("slisten").textContent = $("listen").textContent.replace(/\s*L$/, "");
+}
+
 // ------------------------------------------------------------ api
 async function api(path, opts){
   const r = await fetch(path, opts);
@@ -462,24 +623,27 @@ function toast(t, cls=""){
   const el = $("toast"); el.textContent = t; el.className = cls; el.style.display = "block";
   clearTimeout(toast.h); toast.h = setTimeout(() => el.style.display = "none", 3500);
 }
-function msg(t, cls="dim"){ const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
+function msg(t, cls="dim"){ const m = $("msg"); m.textContent = t; m.className = "msg " + cls; if (isSimple() && cls === "bad") toast(t, "bad"); }
 
 async function pollStatus(){
   try {
     const s = await api("/api/status");
     st = s; stAt = performance.now();
+    if (!viewChoice) setView(s.default_view === "simple" ? "simple" : "full", false);
     if (s.buffer_minutes !== spanOptsFor) buildSpanOptions();
     renderStatus();
+    renderSimple(s);
   } catch(e){
     $("stxt").textContent = "OFFLINE"; $("dot").className = "dot";
     $("source").textContent = "Can't reach the recorder: " + e.message;
+    renderSimple(st, e.message);
   }
   setTimeout(pollStatus, 200);
 }
 
 async function pollPeaks(){
   const now = performance.now();
-  if (!peakBusy && st && (peakDirty || (follow && now - lastPeakReq > 400) || now - lastPeakReq > 2000)){
+  if (!peakBusy && st && !isSimple() && (peakDirty || (follow && now - lastPeakReq > 400) || now - lastPeakReq > 2000)){
     peakBusy = true; peakDirty = false; lastPeakReq = now;
     const [t0, t1] = view();
     const w = $("wave").clientWidth;
@@ -499,6 +663,13 @@ function renderStatus(){
   let [txt, cls] = map[s.status] || [s.status, ""];
   const fo = s.failover, onBackup = fo && fo.active === "backup";
   if (onBackup && s.status === "recording") txt = "REC · ON BACKUP";
+  if (s.status === "recording"){
+    const rec = s.archive_enabled, live = s.streaming && (s.outputs || []).some(o => o.enabled !== false);
+    if (s.split_controls && (s.outputs || []).length)
+      txt = rec ? (live ? "REC · STREAMING" : "REC · NOT STREAMING") : (live ? "LIVE · NOT RECORDING" : "BUFFERING ONLY");
+    else if (!rec) txt = "LIVE · NOT RECORDING";
+    if (onBackup) txt += " · ON BACKUP";
+  }
   $("stxt").textContent = txt;
   $("stxt").style.color = onBackup ? "var(--amber)" : s.status === "recording" ? "var(--red)" : (s.status === "stopped" ? "var(--fg)" : "var(--amber)");
   $("dot").className = "dot " + cls;
@@ -528,8 +699,20 @@ function renderStatus(){
   if (s.archive){
     const lt = live() ?? s.server_time;
     $("file").textContent = `Writing ${s.archive.name}  ·  ${dur(lt - s.archive.start)}  ·  next file at ${hms(s.archive.boundary,false).slice(0,5)}`;
-  } else $("file").textContent = s.archive_enabled ? "" : "Archive off";
-  $("recbtn").textContent = s.running ? "■ Stop" : "● Record";
+  } else $("file").textContent = s.archive_enabled ? "" : "Archive off: streaming without saving recordings";
+  $("recbtn").textContent = s.running ? "■ Stop" : (s.archive_enabled ? "● Record" : "● Start");
+  const split = !!s.split_controls, recOn = s.running && s.archive_enabled;
+  $("recbtn").hidden = split; $("recbtn2").hidden = !split; $("streambtn").hidden = !split;
+  if (split){
+    $("recbtn2").textContent = recOn ? "■ Stop Recording" : "● Start Recording";
+    $("recbtn2").className = recOn ? "" : "rec";
+    $("streambtn").textContent = s.streaming ? "■ Stop Streaming" : "▶ Start Streaming";
+    $("streambtn").className = s.streaming ? "" : "accent";
+    for (const b of ["recbtn2", "streambtn"]){
+      $(b).disabled = s.can_edit === false;
+      $(b).title = s.can_edit === false ? "Needs a web password to start/stop from another machine" : "";
+    }
+  }
   $("recbtn").className = s.running ? "" : "rec";
   $("recbtn").disabled = s.can_edit === false;
   $("recbtn").title = s.can_edit === false ? "Needs a web password to start/stop from another machine" : "";
@@ -702,7 +885,7 @@ function drawWave(){
 }
 
 function frame(){
-  drawMeter(); drawWave();
+  drawMeter(); if (!isSimple()) drawWave();
   $("clock").textContent = st ? hms(serverNow(), false) : "--:--:--";
   if (sel.a != null && sel.b == null && st) $("dur").textContent = "+" + dur((live() ?? sel.a) - sel.a);
   requestAnimationFrame(frame);
@@ -1001,6 +1184,8 @@ const FIELDS = [
   ["General"],
   ["station_name","Station name","text"],
   ["autostart","Record when the service starts","bool"],
+  ["split_controls","Separate recording and streaming buttons","bool",null,"<b>Start/Stop Recording</b> and <b>Start/Stop Streaming</b> instead of one Record button. Each switches straight away while the other carries on, and is remembered over a restart. Turning this off puts streaming back on"],
+  ["default_view","Main page layout","select",[["full","Full: timeline, grabs, songs and log"],["simple","Simple: just whether everything's working"]],"For browsers that haven't chosen. Anyone can switch with the Simple view / Full view button; each browser remembers its choice"],
   ["Source"],
   ["source_type","Source","select",[["stream","Internet stream"],["device","Sound card input"],["receive","Receive a stream (SRT / UDP / RTP / Icecast push)"],["custom","Custom ffmpeg input"]]],
   ["receive_protocol","Receive","select",[["srt","SRT (another Airlog, OBS, an SRT codec)"],["icecast","Icecast push (BUTT, Mixxx, playout stream-out)"],["udp","MPEG-TS over UDP"],["rtp","RTP"]],"Senders connect to this recorder. Open the port in its firewall","receive"],
@@ -1477,9 +1662,22 @@ for (const [id, edge] of [["in","a"],["out","b"]]){
   el.addEventListener("keydown", e => { if (e.key === "Enter"){ commit(); el.blur(); } });
   el.addEventListener("change", commit);
 }
+// The separate buttons (Settings → General): each switches straight away; the other carries on.
+async function runSwitch(what, on){
+  if (!on){
+    const other = what === "recording" ? "Streaming" : "Recording";
+    const q = what === "recording" ? "Stop recording?\n\nThe current archive file is closed." : "Stop streaming?\n\nEvery output disconnects.";
+    if (!confirm(q + `\n\n${other} carries on if it's on.`)) return;
+  }
+  try { await api("/api/run", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({what, on})}); }
+  catch(e){ toast(e.message, "bad"); }
+}
+$("recbtn2").onclick = () => st && runSwitch("recording", !(st.running && st.archive_enabled));
+$("streambtn").onclick = () => st && runSwitch("streaming", !st.streaming);
 $("recbtn").onclick = async () => {
   if (!st) return;
-  if (st.running && !confirm("Stop recording on the recorder?\n\nThe current archive file will be closed.")) return;
+  if (st.running && !confirm(st.archive_enabled ? "Stop recording on the recorder?\n\nThe current archive file will be closed. Outputs stop too."
+                                                : "Stop the recorder?\n\nThe outputs stop sending.")) return;
   try { await api("/api/record", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({action: st.running ? "stop" : "start"})}); }
   catch(e){ toast(e.message, "bad"); }
 };
@@ -1488,6 +1686,7 @@ document.addEventListener("keydown", e => {
   if ($("settings").classList.contains("on")) { if (e.key === "Escape") $("settings").classList.remove("on"); return; }
   const typing = ["INPUT","SELECT","TEXTAREA"].includes(document.activeElement.tagName);
   const k = e.key;
+  if (isSimple() && !(!typing && (k === "l" || k === "L"))) return;
   const fn = {F2:markIn, F3:markOut, F4:grabSel, F5:grabSince, Escape:() => setSel(null,null)}[k] || (!typing && (k === "p" || k === "P") ? preview : !typing && (k === "l" || k === "L") ? listenLive : null);
   if (fn){ e.preventDefault(); fn(); }
 });

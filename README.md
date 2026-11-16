@@ -207,6 +207,16 @@ turns the announcement off.
 
 ## Using the browser UI
 
+**Simple view.** For people who only need to know it's working, the
+**Simple view** button in the header swaps the timeline, grabs and tabs for one
+verdict, *All good*, or what needs attention in plain words (stopped, source
+lost or reconnecting, on the backup source, silence, an output with a problem,
+the alternative input failing), with a tile each for the recorder, the source
+and every output, and Listen live. **Full view** brings everything back. Each
+browser remembers its choice; a link ending `?view=simple` or `?view=full`
+opens that layout; and **Settings → General → Main page layout** sets what
+browsers that haven't chosen see first (Full unless you change it).
+
 ![Listening live: the playhead follows the recording, a couple of seconds behind](docs/screenshots/listen-live.png)
 
 - **Waveform:** shows from 1 minute up to the length of the grab buffer (at most
@@ -267,6 +277,18 @@ WireGuard) or nginx with HTTPS. Don't port-forward it.
 - **Source:** an internet stream (Icecast/Shoutcast/HLS/.pls/.m3u), a sound card
   input, a stream **sent to** the recorder (SRT, UDP, RTP, or an Icecast-style
   push; see [Streaming](#streaming-in-and-out)), or any custom ffmpeg input.
+- **Streaming without recording:** untick *Record archive files* (Settings →
+  Hourly archive) and Airlog works as an encoder only: the outputs carry on and
+  the header says **LIVE · NOT RECORDING**. The grab buffer still keeps the last
+  couple of hours (Listen live and grabs use it); lower *Grab buffer* to keep less.
+- **Separate recording and streaming buttons** (Settings → General): instead of
+  one Record button, **Start/Stop Recording** and **Start/Stop Streaming**. Each
+  switches straight away while the other carries on: recording starts a new
+  file from that minute and closes it cleanly; streaming connects or disconnects
+  every output (each output's own switch still applies). Both off stops the
+  recorder. The choice is remembered over a restart; turning the option off puts
+  streaming back on. The header says which: **REC · STREAMING**,
+  **REC · NOT STREAMING**, **LIVE · NOT RECORDING**.
 - **Backup source:** a second source runs alongside the main one and takes over
   automatically if the main source drops out or goes silent, then hands back
   when it recovers. See [Backup source](#backup-source).
@@ -670,6 +692,7 @@ The browser UI uses these; they're handy for scripting too.
 | `GET /api/tracks[?limit=200]` | identified songs, newest first (`now_playing` is also in `/api/status`) |
 | `GET/POST /api/config` | settings (POST: signed in, local browser, or *Trusted network*) |
 | `POST /api/record {action: start\|stop}` | control (as above) |
+| `POST /api/run {what: recording\|streaming, on}` | the separate buttons (when turned on in Settings) |
 | `POST /api/outputs/<id> {enabled}` | switch one output on or off (as above) |
 | `GET/POST /api/switch {state}`, `POST /api/switch/login {password}` | the switch page (its own password; also on the switch page port) |
 | `POST /api/alt {state: alternative\|programme\|auto}` | what the switched outputs carry; `auto` hands back to the schedule (as above) |
@@ -720,6 +743,14 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
   titles and the API.
 - `python tests/test_browse.py` checks the settings folder browser: listing,
   new folders and who may use it.
+- `python tests/test_runbuttons.py` switches recording and streaming separately
+  on a real engine, watching the archive and a UDP output: each carries on
+  without the other, both off stops it, no stub files, restarts keep the choice.
+- `python tests/test_simpleview.py` checks the main page layout setting and the
+  status the Simple view reads.
+- `python tests/test_icecast.py` runs a real Icecast 2 server (skipped without
+  `icecast2`) and listens to what it serves: MP3/AAC/Ogg/Opus mounts, titles, a
+  wrong password, the server restarting, and the alternative input.
 - `python tests/test_switchpage.py` checks the switch page's password, lock-out
   and sign-out, that its sign-in opens nothing else, and that its own port
   serves only the switch page, moves when changed and closes when turned off.

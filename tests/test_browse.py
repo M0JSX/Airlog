@@ -56,5 +56,5 @@ assert local.post("/api/browse/mkdir", json={"path": str(tmp / "nope"), "name": 
 print("-- only for whoever may change settings")
 assert remote.get("/api/browse").status_code == 403
 assert remote.post("/api/browse/mkdir", json={"path": str(music), "name": "x"}).status_code == 403
-holder.engine.stop()
-print("browse OK")
+from _finish import finish  # noqa: E402
+finish(holder, "browse OK")
