@@ -115,6 +115,7 @@ class Config:
     web_password: str = ""            # blank = no login (trusted LAN only)
     trusted_lan: bool = False         # no password: let any machine on the network change settings
     switch_password: str = ""         # the /switch page (internet outputs only); blank = page off
+    default_view: str = "full"        # main page layout for browsers that haven't chosen: "full" or "simple"
     switch_port: int = 0              # also serve only the switch page on this port; 0 = none
     # Shown under the switch page's buttons; blank = nothing.
     switch_note: str = "This only changes the internet stream."

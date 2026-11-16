@@ -680,6 +680,10 @@ class Output:
                                                     for l in iter(proc.stderr.readline, b"")), daemon=True).start()
         self._set("connected", describe(o))
         self._title_sent = None
+        try:
+            peer = sock.getpeername()[:2]
+        except OSError:
+            peer = None
         sock.settimeout(20)
         started = time.monotonic()
         next_title_check = 0.0
@@ -693,7 +697,7 @@ class Output:
             except (OSError, socket.timeout) as e:
                 if not self.running:
                     break
-                raise OutputError(_drop_reason(sock, e, time.monotonic() - started)) from None
+                raise OutputError(_drop_reason(sock, e, time.monotonic() - started, peer)) from None
             self.sent += len(chunk)
             if o["send_titles"] and time.monotonic() >= next_title_check:
                 next_title_check = time.monotonic() + 2
@@ -726,7 +730,18 @@ class Output:
 
 
 # ---------------------------------------------------------------- server protocols
-def _drop_reason(sock: socket.socket, e: BaseException, secs: float) -> str:
+def _server_gone(peer) -> bool:
+    """Nothing answers at the server's address any more: it stopped or is restarting (not a refusal)."""
+    if not peer:
+        return False
+    try:
+        socket.create_connection(peer, timeout=2).close()
+        return False
+    except OSError:
+        return True
+
+
+def _drop_reason(sock: socket.socket, e: BaseException, secs: float, peer=None) -> str:
     """Why a stream server connection ended: how long it lasted, plus anything the server said before
     closing (Shoutcast and Icecast sometimes send a line of text, e.g. a bitrate or format complaint)."""
     said = ""
@@ -744,6 +759,8 @@ def _drop_reason(sock: socket.socket, e: BaseException, secs: float) -> str:
     msg = f"{kind} after {m}m{sec:02d}s"
     if said:
         msg += f'; it said: "{said[:160]}"'
+    elif _server_gone(peer):
+        msg += " and isn't answering now (stopped or restarting?); retrying"
     elif secs < 15:
         msg += " (dropped soon after connecting: often the server rejecting the stream format or bitrate)"
     return msg

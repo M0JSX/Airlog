@@ -226,6 +226,8 @@ try:
     stop_server()
     assert wait(lambda: any(st != "connected" and st != "sending" for st in states(e).values()), 20), states(e)
     print("   while it was down:", states(e))
+    details = " ".join(o["detail"] for o in e.outputs.status())
+    assert "isn't answering now" in details and "rejecting the stream format" not in details, details
     start_server()
     t = time.time()
     if not wait(lambda: want <= set(sources()), 90):
