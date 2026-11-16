@@ -132,8 +132,8 @@ remote = create_app(holder).test_client()
 remote.environ_base["REMOTE_ADDR"] = "192.168.1.9"
 assert remote.post("/api/run", json={"what": "recording", "on": False}).status_code == 403
 assert cl.post("/api/run", json={"what": "both", "on": True}).status_code == 400
-holder.engine.stop()
 names = [f.name for f in files()]
 assert not any(n.endswith("_2.mp3") for n in names), "a stub file: " + str(names) + "\n" + "\n".join(l for l in holder.engine.logs if any(w in l for w in ("Archive", "Gap", "Recording", "Streaming", "faster", "Source:")))
 print("   files:", names)
-print("run buttons OK")
+from _finish import finish  # noqa: E402
+finish(holder, "run buttons OK")

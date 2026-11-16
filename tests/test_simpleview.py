@@ -35,5 +35,5 @@ remote.environ_base["REMOTE_ADDR"] = "192.168.1.40"
 assert remote.post("/api/config", json={"default_view": "full"}).status_code == 403   # a setting like any other
 page = cl.get("/").get_data(as_text=True)
 assert 'id="simple"' in page and 'id="viewbtn"' in page and "default_view" in page
-holder.engine.stop()
-print("simple view OK")
+from _finish import finish  # noqa: E402
+finish(holder, "simple view OK")
