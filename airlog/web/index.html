@@ -39,6 +39,7 @@ header{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:s
 #clock{font:700 28px var(--mono)}
 #silence{color:var(--red);font-weight:700;font-size:13px;text-align:right;min-height:1.2em}
 .hbtns{display:flex;flex-direction:column;gap:6px}
+[hidden]{display:none!important}
 
 main{padding:14px 18px 18px;display:flex;flex-direction:column;gap:12px}
 .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -182,6 +183,8 @@ body.simple main > :not(#simple){display:none !important}
     <div><div id="clock">--:--:--</div><div id="silence"></div></div>
     <div class="hbtns">
       <button id="recbtn" class="rec">● Record</button>
+      <button id="recbtn2" class="rec" hidden>● Start Recording</button>
+      <button id="streambtn" hidden>▶ Start Streaming</button>
       <button id="viewbtn" title="Switch between the full page and a simple status view (remembered in this browser)">Simple view</button>
       <button id="setbtn">Settings</button>
     </div>
@@ -391,7 +394,8 @@ function renderOutputs(list){
   const icon = {connected:["●","ok"], sending:["●","ok"], playing:["●","ok"], connecting:["○","warn"], waiting:["○","warn"], error:["⚠","bad"], off:["○","dim"], starting:["○","dim"]};
   const html = list.map(o => {
     const [i, c] = icon[o.state] || ["○", "dim"];
-    const what = {connected:"connected", sending:"sending", playing:"playing", connecting:"connecting…", waiting:"waiting for a receiver", error:o.detail, off:"off", starting:"starting"}[o.state] || o.state;
+    let what = {connected:"connected", sending:"sending", playing:"playing", connecting:"connecting…", waiting:"waiting for a receiver", error:o.detail, off:"off", starting:"starting"}[o.state] || o.state;
+    if (st && st.split_controls && !st.streaming_wanted && o.enabled !== false) what = "streaming stopped";
     const tip = `${o.target} · ${o.codec}` + (o.processing ? ` · ${o.processing}` : "") + (o.detail && o.state !== "error" ? ` · ${o.detail}` : "") + (o.dropped ? ` · ${o.dropped} blocks dropped (network too slow?)` : "");
     const on = o.enabled !== false, locked = st && st.can_edit === false;
     const sw = `<button class="sw${on ? " on" : ""}" data-outsw="${esc(o.id)}" data-on="${on ? 1 : 0}" data-name="${esc(o.name)}" role="switch" aria-checked="${on}" `
@@ -518,7 +522,8 @@ function ago(sec){
 // What's wrong, worst first: [severity, text]. Nothing = all good.
 function problems(s){
   const out = [], fo = s.failover, onBackup = fo && fo.active === "backup";
-  if (s.status === "stopped") out.push(["bad", `Stopped: press ● ${s.archive_enabled ? "Record" : "Start"}`]);
+  if (s.status === "stopped") out.push(["bad", s.split_controls ? "Stopped: press Start Recording or Start Streaming"
+                                                                  : `Stopped: press ● ${s.archive_enabled ? "Record" : "Start"}`]);
   else if (s.status !== "recording"){
     const what = {starting: "Connecting to the source", reconnecting: "Lost the source: reconnecting",
                   waiting: "Waiting for the sender", error: "Problem with the source"}[s.status] || s.status;
@@ -532,7 +537,7 @@ function problems(s){
   }
   if (s.status === "recording" && s.silence_s >= s.silence_alert_s) out.push(["warn", `Silence for ${ago(s.silence_s)}`]);
   for (const o of s.outputs || []){
-    if (o.enabled === false) continue;
+    if (o.enabled === false || !s.streaming_wanted) continue;
     if (o.state === "error") out.push(["bad", `${o.name}: ${o.detail || "problem"}`]);
     else if (o.state === "connecting" || o.state === "starting") out.push(["warn", `${o.name}: connecting…`]);
     else if (o.state === "waiting") out.push(["warn", `${o.name}: waiting for a receiver`]);
@@ -551,9 +556,11 @@ function renderSimple(s, offline){
   } else {
     list = problems(s);
     const on = outs.filter(o => o.enabled !== false), off = outs.length - on.length;
-    const doing = s.status === "recording" ? (s.archive_enabled ? "Recording" : "Streaming, not saving recordings") : "";
-    sub = [doing, on.length ? `sending to ${on.length} output${on.length > 1 ? "s" : ""}` : (s.status === "recording" && !s.archive_enabled ? "no outputs on" : ""),
-           off ? `${off} switched off` : ""].filter(Boolean).join(" · ");
+    const live = s.status === "recording", streamOn = s.streaming_wanted !== false;
+    const doing = !live ? "" : s.archive_enabled ? "Recording" : streamOn ? "Streaming, not saving recordings" : "Not recording or streaming";
+    sub = [doing, live && streamOn && on.length ? `sending to ${on.length} output${on.length > 1 ? "s" : ""}`
+                : live && !streamOn && outs.length ? "not streaming" : (live && !s.archive_enabled ? "no outputs on" : ""),
+           streamOn && off ? `${off} switched off` : ""].filter(Boolean).join(" · ");
     sub = sub.charAt(0).toUpperCase() + sub.slice(1);
     cls = !list.length ? "ok" : list.some(x => x[0] === "bad") ? "bad" : "warn";
     big = {ok: "✓ All good", warn: "⚠ Check", bad: "✕ Needs attention"}[cls];
@@ -582,6 +589,10 @@ function renderSimple(s, offline){
               error: "Problem", off: "Switched off", starting: "Starting"};
   for (const o of outs){
     const ok = ["connected", "sending", "playing"].includes(o.state) && o.enabled !== false;
+    if (s.streaming_wanted === false){
+      t.push(tile(`<span>${esc(o.name)}</span>`, '<span class="dim">Not streaming</span>', "Streaming is stopped (Start Streaming)"));
+      continue;
+    }
     const d = o.enabled === false ? "Switched off on this page or in Settings"
             : o.state === "error" ? esc(o.detail || "")
             : esc(o.target) + (ok && o.since ? ` · for ${ago(now - o.since)}` : "");
@@ -652,7 +663,13 @@ function renderStatus(){
   let [txt, cls] = map[s.status] || [s.status, ""];
   const fo = s.failover, onBackup = fo && fo.active === "backup";
   if (onBackup && s.status === "recording") txt = "REC · ON BACKUP";
-  if (s.status === "recording" && !s.archive_enabled) txt = onBackup ? "LIVE · ON BACKUP" : "LIVE · NOT RECORDING";
+  if (s.status === "recording"){
+    const rec = s.archive_enabled, live = s.streaming && (s.outputs || []).some(o => o.enabled !== false);
+    if (s.split_controls && (s.outputs || []).length)
+      txt = rec ? (live ? "REC · STREAMING" : "REC · NOT STREAMING") : (live ? "LIVE · NOT RECORDING" : "BUFFERING ONLY");
+    else if (!rec) txt = "LIVE · NOT RECORDING";
+    if (onBackup) txt += " · ON BACKUP";
+  }
   $("stxt").textContent = txt;
   $("stxt").style.color = onBackup ? "var(--amber)" : s.status === "recording" ? "var(--red)" : (s.status === "stopped" ? "var(--fg)" : "var(--amber)");
   $("dot").className = "dot " + cls;
@@ -684,6 +701,18 @@ function renderStatus(){
     $("file").textContent = `Writing ${s.archive.name}  ·  ${dur(lt - s.archive.start)}  ·  next file at ${hms(s.archive.boundary,false).slice(0,5)}`;
   } else $("file").textContent = s.archive_enabled ? "" : "Archive off: streaming without saving recordings";
   $("recbtn").textContent = s.running ? "■ Stop" : (s.archive_enabled ? "● Record" : "● Start");
+  const split = !!s.split_controls, recOn = s.running && s.archive_enabled;
+  $("recbtn").hidden = split; $("recbtn2").hidden = !split; $("streambtn").hidden = !split;
+  if (split){
+    $("recbtn2").textContent = recOn ? "■ Stop Recording" : "● Start Recording";
+    $("recbtn2").className = recOn ? "" : "rec";
+    $("streambtn").textContent = s.streaming ? "■ Stop Streaming" : "▶ Start Streaming";
+    $("streambtn").className = s.streaming ? "" : "accent";
+    for (const b of ["recbtn2", "streambtn"]){
+      $(b).disabled = s.can_edit === false;
+      $(b).title = s.can_edit === false ? "Needs a web password to start/stop from another machine" : "";
+    }
+  }
   $("recbtn").className = s.running ? "" : "rec";
   $("recbtn").disabled = s.can_edit === false;
   $("recbtn").title = s.can_edit === false ? "Needs a web password to start/stop from another machine" : "";
@@ -1155,6 +1184,7 @@ const FIELDS = [
   ["General"],
   ["station_name","Station name","text"],
   ["autostart","Record when the service starts","bool"],
+  ["split_controls","Separate recording and streaming buttons","bool",null,"<b>Start/Stop Recording</b> and <b>Start/Stop Streaming</b> instead of one Record button. Each switches straight away while the other carries on, and is remembered over a restart. Turning this off puts streaming back on"],
   ["default_view","Main page layout","select",[["full","Full: timeline, grabs, songs and log"],["simple","Simple: just whether everything's working"]],"For browsers that haven't chosen. Anyone can switch with the Simple view / Full view button; each browser remembers its choice"],
   ["Source"],
   ["source_type","Source","select",[["stream","Internet stream"],["device","Sound card input"],["receive","Receive a stream (SRT / UDP / RTP / Icecast push)"],["custom","Custom ffmpeg input"]]],
@@ -1632,6 +1662,18 @@ for (const [id, edge] of [["in","a"],["out","b"]]){
   el.addEventListener("keydown", e => { if (e.key === "Enter"){ commit(); el.blur(); } });
   el.addEventListener("change", commit);
 }
+// The separate buttons (Settings → General): each switches straight away; the other carries on.
+async function runSwitch(what, on){
+  if (!on){
+    const other = what === "recording" ? "Streaming" : "Recording";
+    const q = what === "recording" ? "Stop recording?\n\nThe current archive file is closed." : "Stop streaming?\n\nEvery output disconnects.";
+    if (!confirm(q + `\n\n${other} carries on if it's on.`)) return;
+  }
+  try { await api("/api/run", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({what, on})}); }
+  catch(e){ toast(e.message, "bad"); }
+}
+$("recbtn2").onclick = () => st && runSwitch("recording", !(st.running && st.archive_enabled));
+$("streambtn").onclick = () => st && runSwitch("streaming", !st.streaming);
 $("recbtn").onclick = async () => {
   if (!st) return;
   if (st.running && !confirm(st.archive_enabled ? "Stop recording on the recorder?\n\nThe current archive file will be closed. Outputs stop too."

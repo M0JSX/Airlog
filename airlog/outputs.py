@@ -755,12 +755,15 @@ def _drop_reason(sock: socket.socket, e: BaseException, secs: float, peer=None) 
             "ConnectionAbortedError": "the server ended the connection",
             "timeout": "the server stopped accepting audio for 20 s", "TimeoutError": "the server stopped accepting audio for 20 s"
             }.get(type(e).__name__, f"connection lost ({type(e).__name__})")
+    # The server's own "OK" from connecting can still be unread: that isn't a complaint.
+    if re.match(r"(HTTP/1\.[01] 2\d\d|ICY 200|OK2)\b", said):
+        said = ""
     m, sec = divmod(int(secs), 60)
     msg = f"{kind} after {m}m{sec:02d}s"
-    if said:
-        msg += f'; it said: "{said[:160]}"'
-    elif _server_gone(peer):
+    if _server_gone(peer):
         msg += " and isn't answering now (stopped or restarting?); retrying"
+    elif said:
+        msg += f'; it said: "{said[:160]}"'
     elif secs < 15:
         msg += " (dropped soon after connecting: often the server rejecting the stream format or bitrate)"
     return msg
@@ -993,7 +996,25 @@ class OutputSet:
         self._last_feed_alt = time.monotonic()       # alternative input audio
         self._keepalive_on = False
         self.alt_on = False                          # switched outputs carry the alternative input
+        self.streaming = engine.streaming_wanted()   # the Start/Stop Streaming button (always on otherwise)
 
+    def set_streaming(self, on: bool) -> None:
+        """Start or stop every output at once (Start/Stop Streaming), leaving each output's own switch."""
+        with self._lock:
+            if on == self.streaming:
+                return
+            self.streaming = on
+            if on:
+                # Fresh Outputs, as for one output's switch: an old one stuck connecting just exits.
+                fresh = {id(o): Output(self.engine, o.o) for o in self.active}
+                self.items = [fresh.get(id(o), o) for o in self.items]
+                self.active = [fresh[id(o)] for o in self.active]
+                if self.engine.running:
+                    for o in self.active:
+                        o.start()
+            else:
+                for o in self.items:
+                    o.stop()
     def set_enabled(self, oid: str, on: bool) -> None:
         """Turn one output on or off while recording carries on (the main page's switches)."""
         with self._lock:
@@ -1011,7 +1032,7 @@ class OutputSet:
                 self.items = [new if o is item else o for o in self.items]
                 self.engine.log(f"Output \"{new.o['name']}\" switched on")
                 self.active = self.active + [new]        # a new list: feed() may be iterating the old one
-                if self.engine.running:
+                if self.engine.running and self.streaming:
                     new.start()
             else:
                 self.active = [o for o in self.active if o is not item]
@@ -1019,8 +1040,9 @@ class OutputSet:
                 self.engine.log(f"Output \"{item.o['name']}\" switched off (recording carries on)")
 
     def start(self) -> None:
-        for o in self.active:
-            o.start()
+        if self.streaming:
+            for o in self.active:
+                o.start()
         self._last_feed = time.monotonic()
         self._keepalive_on = True
         threading.Thread(target=self._keepalive, name="outputs-keepalive", daemon=True).start()
@@ -1033,6 +1055,8 @@ class OutputSet:
     def feed(self, pcm: bytes) -> None:
         """Programme audio: to every output, except switched ones while the alternative is on."""
         self._last_feed = time.monotonic()
+        if not self.streaming:
+            return
         alt = self.alt_on
         for o in self.active:
             if not (alt and o.switches()):
@@ -1041,7 +1065,7 @@ class OutputSet:
     def feed_alt(self, pcm: bytes) -> None:
         """Alternative input audio: only to switched outputs, and only while the alternative is on."""
         self._last_feed_alt = time.monotonic()
-        if not self.alt_on:
+        if not self.alt_on or not self.streaming:
             return
         for o in self.active:
             if o.switches():
@@ -1072,9 +1096,9 @@ class OutputSet:
         while self._keepalive_on:
             time.sleep(KEEPALIVE_TICK_S)
             now = time.monotonic()
-            alt = self.alt_on
-            groups = {"prog": [o for o in self.active if not (alt and o.switches())],
-                      "alt": [o for o in self.active if alt and o.switches()]}
+            alt, on = self.alt_on, self.streaming
+            groups = {"prog": [o for o in self.active if on and not (alt and o.switches())],
+                      "alt": [o for o in self.active if on and alt and o.switches()]}
             for route, targets in groups.items():
                 st = state[route]
                 last = self._last_feed if route == "prog" else self._last_feed_alt

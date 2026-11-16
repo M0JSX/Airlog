@@ -371,6 +371,7 @@ class Engine:
         self.alt_switches: collections.deque[dict] = collections.deque(maxlen=50)
         self.active = self.main
         self.select_lock = threading.RLock()  # held while a block is placed or the source switches
+        self.run_lock = threading.RLock()     # start() and stop() take turns: a start waits for a stop
         self.switches: collections.deque[dict] = collections.deque(maxlen=50)
         self.on_backup_since: float | None = None
         self._main_ok_since: float | None = None
@@ -426,9 +427,62 @@ class Engine:
                 pass
 
     # ------------------------------------------------------------------ control
+    # ---------------------------------------------------------------- recording / streaming buttons
+    def streaming_wanted(self) -> bool:
+        """Outputs on: always, unless separate recording/streaming buttons are on and streaming is off."""
+        return bool(self.cfg.streaming_enabled or not self.cfg.split_controls)
+
+    def set_recording(self, on: bool) -> None:
+        """Start/Stop Recording: archive files start (a new file from this minute) or close, while
+        streaming carries on. Starts the recorder if needed; stops it when nothing's left to do."""
+        with self.select_lock:
+            was = self.cfg.archive_enabled
+            self.cfg.archive_enabled = on
+            if not on:
+                self._close_archive()
+        if on and not self._running:
+            self.start()
+        if was != on:
+            self.log("Recording started" if on else
+                     "Recording stopped" + (" (streaming carries on)" if self.streaming_wanted() and self._running else ""))
+        self._stop_if_idle()
+
+    def set_streaming(self, on: bool) -> None:
+        """Start/Stop Streaming: every output connects or disconnects; recording carries on."""
+        was = self.outputs.streaming
+        self.cfg.streaming_enabled = on
+        self.outputs.set_streaming(on)
+        if on and not self._running:
+            self.start()
+        if was != on:
+            self.log("Streaming started" if on else
+                     "Streaming stopped" + (" (recording carries on)" if self.cfg.archive_enabled and self._running else ""))
+        self._stop_if_idle()
+
+    def idle(self) -> bool:
+        """Separate buttons, and both recording and streaming are off: nothing for the recorder to do."""
+        return bool(self.cfg.split_controls and not self.cfg.archive_enabled and not self.cfg.streaming_enabled)
+
+    def _stop_if_idle(self) -> None:
+        if self._running and self.idle():
+            def stop_unless_needed():
+                with self.run_lock:          # something may have been switched back on meanwhile
+                    if self.idle():
+                        self._stop()
+            threading.Thread(target=stop_unless_needed, daemon=True).start()
+
     def start(self) -> None:
+        with self.run_lock:
+            self._start()
+
+    def _start(self) -> None:
         if self._running:
             return
+        if self.t0 is not None:
+            # Started again after a deliberate stop: a fresh timeline from now. Filling the stopped
+            # time with silence (as for a dropout) would pad the first new file back to the stop.
+            self.t0 = None
+            self._pending_new_segment = True
         self._running = True
         self._started_mono = time.monotonic()
         self.main.start()
@@ -447,6 +501,10 @@ class Engine:
         self.outputs.start()
 
     def stop(self) -> None:
+        with self.run_lock:
+            self._stop()
+
+    def _stop(self) -> None:
         self._running = False
         self.outputs.stop()
         self.tracks.close(self.live_time() or time.time())

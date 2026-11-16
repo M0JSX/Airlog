@@ -281,6 +281,14 @@ WireGuard) or nginx with HTTPS. Don't port-forward it.
   Hourly archive) and Airlog works as an encoder only: the outputs carry on and
   the header says **LIVE · NOT RECORDING**. The grab buffer still keeps the last
   couple of hours (Listen live and grabs use it); lower *Grab buffer* to keep less.
+- **Separate recording and streaming buttons** (Settings → General): instead of
+  one Record button, **Start/Stop Recording** and **Start/Stop Streaming**. Each
+  switches straight away while the other carries on: recording starts a new
+  file from that minute and closes it cleanly; streaming connects or disconnects
+  every output (each output's own switch still applies). Both off stops the
+  recorder. The choice is remembered over a restart; turning the option off puts
+  streaming back on. The header says which: **REC · STREAMING**,
+  **REC · NOT STREAMING**, **LIVE · NOT RECORDING**.
 - **Backup source:** a second source runs alongside the main one and takes over
   automatically if the main source drops out or goes silent, then hands back
   when it recovers. See [Backup source](#backup-source).
@@ -684,6 +692,7 @@ The browser UI uses these; they're handy for scripting too.
 | `GET /api/tracks[?limit=200]` | identified songs, newest first (`now_playing` is also in `/api/status`) |
 | `GET/POST /api/config` | settings (POST: signed in, local browser, or *Trusted network*) |
 | `POST /api/record {action: start\|stop}` | control (as above) |
+| `POST /api/run {what: recording\|streaming, on}` | the separate buttons (when turned on in Settings) |
 | `POST /api/outputs/<id> {enabled}` | switch one output on or off (as above) |
 | `GET/POST /api/switch {state}`, `POST /api/switch/login {password}` | the switch page (its own password; also on the switch page port) |
 | `POST /api/alt {state: alternative\|programme\|auto}` | what the switched outputs carry; `auto` hands back to the schedule (as above) |
@@ -734,6 +743,9 @@ now=$(date +%s); curl -o clip.mp3 "http://recorder:8080/api/clip?from=$((now-120
   titles and the API.
 - `python tests/test_browse.py` checks the settings folder browser: listing,
   new folders and who may use it.
+- `python tests/test_runbuttons.py` switches recording and streaming separately
+  on a real engine, watching the archive and a UDP output: each carries on
+  without the other, both off stops it, no stub files, restarts keep the choice.
 - `python tests/test_simpleview.py` checks the main page layout setting and the
   status the Simple view reads.
 - `python tests/test_icecast.py` runs a real Icecast 2 server (skipped without
