@@ -5,8 +5,7 @@
 #   Windows: dist/Airlog/Airlog.exe        (ffmpeg is copied next to it by build_windows.ps1)
 #   Linux:   dist/Airlog/Airlog            (ffmpeg bundled from $AIRLOG_FFMPEG_DIR)
 #   macOS:   dist/Airlog.app               (ffmpeg bundled from $AIRLOG_FFMPEG_DIR)
-# The same executable is the UI launcher, the recorder service (--service) and the classic desktop
-# app (--classic).
+# The same executable is the UI launcher and the recorder service (--service).
 import os
 import re
 import sys
@@ -33,26 +32,25 @@ for pkg in ("sounddevice", "_sounddevice", "_sounddevice_data"):
         continue
     shz_datas += d; shz_bins += b; shz_hidden += h + [pkg]
 
-hidden = ["airlog.ui", "airlog.settings", "airlog.osutil", "airlog.selftest", "airlog.server",
+hidden = ["airlog.osutil", "airlog.selftest", "airlog.server",
           "airlog.servicecore", "airlog.nowplaying", "airlog.discovery", "waitress"]
 if WIN:
     hidden += ["airlog.winservice", "servicemanager", "win32serviceutil", "win32service", "win32event", "win32timezone"]
 else:
     hidden += ["airlog.unixservice"]
 
-# macOS / Linux: ffmpeg, ffprobe (and ffplay if present) go inside the bundle; the app puts
+# macOS / Linux: ffmpeg and ffprobe go inside the bundle; the app puts
 # sys._MEIPASS on PATH at start-up. build_unix.sh sets AIRLOG_FFMPEG_DIR.
 ff_bins = []
 if not WIN:
     ff_dir = os.environ.get("AIRLOG_FFMPEG_DIR")
     if not ff_dir:
         raise SystemExit("Set AIRLOG_FFMPEG_DIR to a folder containing ffmpeg and ffprobe (build_unix.sh does this)")
-    for tool in ("ffmpeg", "ffprobe", "ffplay"):
+    for tool in ("ffmpeg", "ffprobe"):
         p = Path(ff_dir) / tool
-        if p.exists():
-            ff_bins.append((str(p), "."))
-        elif tool != "ffplay":
+        if not p.exists():
             raise SystemExit(f"{p} not found")
+        ff_bins.append((str(p), "."))
 
 datas = [(str(ROOT / "airlog" / "assets"), "airlog/assets"), (str(ROOT / "airlog" / "web"), "airlog/web")]
 lic = os.environ.get("AIRLOG_LICENSE_DIR")      # ffmpeg licence/notice, prepared by build_unix.sh

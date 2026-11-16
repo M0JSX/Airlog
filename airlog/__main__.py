@@ -10,7 +10,6 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="airlog", description="Radio logger with hourly files and instant grabs")
     ap.add_argument("--config", type=Path, help="use this config file instead of the per-user one")
     ap.add_argument("--selftest", type=Path, metavar="REPORT", help=argparse.SUPPRESS)
-    ap.add_argument("--classic", action="store_true", help="run the all-in-one desktop window instead of the service UI")
     ap.add_argument("--install-service", action="store_true",
                     help="install and start the recorder service (Windows/Linux: admin; macOS: login agent)")
     ap.add_argument("--uninstall-service", action="store_true", help="stop and remove the recorder service")
@@ -23,7 +22,7 @@ def main() -> None:
     args = ap.parse_args([a for a in sys.argv[1:] if not a.startswith("-psn_")])
 
     if getattr(sys, "frozen", False):
-        # Packaged build: ffmpeg / ffprobe / ffplay ship next to the executable (Windows)
+        # Packaged build: ffmpeg / ffprobe ship next to the executable (Windows)
         # or in the bundle's internal folder (macOS / Linux).
         import os
         dirs = [os.path.dirname(sys.executable), getattr(sys, "_MEIPASS", "")]
@@ -53,17 +52,14 @@ def main() -> None:
         if windows:
             sys.exit(svc.admin_command(action, args.from_config, args.data_dir, not args.no_shortcuts))
         sys.exit(svc.admin_command(action, args.from_config, args.data_dir, not args.no_shortcuts, args.user))
-    if getattr(sys, "frozen", False) and not args.classic and not args.config:
+    if getattr(sys, "frozen", False) and not args.config:
         # The service does the recording; this just opens its UI.
         sys.exit(svc.launch_ui())
 
-    from .config import Config
-    if args.config:
-        Config.path = classmethod(lambda cls: args.config)  # type: ignore[method-assign]
-    cfg = Config.load()
-
-    from .ui import App
-    App(cfg).mainloop()
+    # From source (or with --config): run the recorder and its web page here, in the foreground.
+    from .server import main as serve
+    sys.argv = [sys.argv[0]] + (["--config", str(args.config)] if args.config else [])
+    serve()
 
 
 if __name__ == "__main__":

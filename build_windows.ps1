@@ -67,7 +67,7 @@ if (-not (Test-Path "$ffdir\bin\ffmpeg.exe")) {
     Move-Item $root $ffdir
     Remove-Item -Recurse -Force $tmp
 }
-foreach ($f in "ffmpeg.exe", "ffprobe.exe", "ffplay.exe") {
+foreach ($f in "ffmpeg.exe", "ffprobe.exe") {
     if (-not (Test-Path "$ffdir\bin\$f")) { throw "$f missing from the ffmpeg build" }
 }
 & "$ffdir\bin\ffmpeg.exe" -hide_banner -version | Select-Object -First 1
@@ -78,7 +78,7 @@ if (Test-Path "dist\Airlog") { Remove-Item -Recurse -Force "dist\Airlog" }
 & $vpy -m PyInstaller --noconfirm --clean --distpath dist --workpath .build\pyi packaging\airlog.spec
 if ($LASTEXITCODE) { throw "PyInstaller failed" }
 
-Copy-Item "$ffdir\bin\ffmpeg.exe", "$ffdir\bin\ffprobe.exe", "$ffdir\bin\ffplay.exe" "dist\Airlog\"
+Copy-Item "$ffdir\bin\ffmpeg.exe", "$ffdir\bin\ffprobe.exe" "dist\Airlog\"
 New-Item -ItemType Directory -Force -Path "dist\Airlog\licenses" | Out-Null
 $lic = Get-ChildItem -Path $ffdir -Filter "LICENSE*" -File | Select-Object -First 1
 if ($lic) { Copy-Item $lic.FullName "dist\Airlog\licenses\ffmpeg-LICENSE.txt" }

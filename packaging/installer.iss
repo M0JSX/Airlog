@@ -1,5 +1,5 @@
 ; Inno Setup script for Airlog. Built by build_windows.ps1 after PyInstaller:
-;   iscc /DAppVersion=1.6.16 packaging\installer.iss
+;   iscc /DAppVersion=1.6.17 packaging\installer.iss
 ; Output: dist\Airlog-Setup-<version>.exe
 ;
 ; Installs to Program Files and registers the "Airlog Recorder" Windows service
@@ -7,7 +7,7 @@
 ; Running a newer Setup over an existing install upgrades it in place.
 
 #ifndef AppVersion
-  #define AppVersion "1.6.16"
+  #define AppVersion "1.6.17"
 #endif
 
 [Setup]
@@ -44,6 +44,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 ; Shortcuts made by a manual "Airlog.exe --install-service"; Setup makes its own below.
 Type: files; Name: "{commonprograms}\Airlog.lnk"
 Type: files; Name: "{commondesktop}\Airlog.lnk"
+; The classic desktop window was removed in 1.6.17: its shortcut from older versions.
+Type: files; Name: "{group}\Airlog (classic desktop window).lnk"
 
 [Files]
 Source: "..\dist\Airlog\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -52,7 +54,6 @@ Source: "stop_airlog.ps1"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\Airlog"; Filename: "{app}\Airlog.exe"; Comment: "Open the Airlog recorder"
-Name: "{group}\Airlog (classic desktop window)"; Filename: "{app}\Airlog.exe"; Parameters: "--classic"; Comment: "All-in-one window; don't record with it while the service runs"
 Name: "{group}\Airlog service log"; Filename: "{commonappdata}\Airlog\logs\service.log"
 Name: "{group}\Uninstall Airlog"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\Airlog"; Filename: "{app}\Airlog.exe"; Tasks: desktopicon
