@@ -42,7 +42,7 @@ def run(report: Path) -> int:
         v = sources.ffmpeg_version("ffmpeg")
         if not v:
             raise RuntimeError("ffmpeg not found on PATH / next to the exe")
-        return f"ffmpeg {v} at {shutil.which('ffmpeg')}; ffplay {'found' if shutil.which('ffplay') else 'MISSING'}"
+        return f"ffmpeg {v} at {shutil.which('ffmpeg')}"
 
     def engine_check():
         from .config import Config

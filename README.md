@@ -52,8 +52,7 @@ send it on, processed, to wherever it needs to go.
 | **macOS** 11+ Apple Silicon | `Airlog-<ver>-macos-arm64.dmg` | launchd agent, while you're logged in |
 
 Every build bundles ffmpeg, so the machine needs nothing else (on Linux, sound
-card outputs also use the system's PortAudio, which the `.deb` installs). There's
-also a classic all-in-one desktop window (`--classic`) for quick use on one machine.
+card outputs also use the system's PortAudio, which the `.deb` installs).
 Airlog Viewer has its own downloads; see [Airlog Viewer](#airlog-viewer).
 
 ## Install
@@ -80,8 +79,6 @@ it crashes.
   Run it again from a new build to upgrade.
 - **`Airlog.exe --uninstall-service`** stops and removes the service, the firewall
   rule and the shortcuts. Settings and recordings are kept.
-- **`Airlog.exe --classic`** runs the old all-in-one desktop window. Don't record
-  with it while the service is running.
 
 The service runs as LocalSystem, so its settings are machine-wide in
 `%ProgramData%\Airlog\config.json` (edit them in the UI's Settings), with its log
@@ -390,9 +387,9 @@ limiter) works on it like any other output.
   not a desktop's PulseAudio/PipeWire, so pick the card's own entry (or
   `default`).
 - Sound card output from the Windows *service* hasn't been tested on real
-  hardware yet: if the card shows an error there but works from
-  `Airlog.exe --classic`, Windows is keeping the service away from audio
-  devices on that machine.
+  hardware yet: if the card shows an error there but the same card plays from
+  other programs, Windows is keeping the service away from audio devices on
+  that machine.
 
 **Processing** (per output, under *Processing* on its card). A compressor and
 peak limiter for that output only; the archive, grabs and other outputs stay
@@ -573,22 +570,6 @@ answer, or rate-limited), and Airlog checks less often until it's back. Recordin
 - The Windows, Linux and macOS builds include it. From source, run
   `pip install shazamio`.
 
-## Desktop app (single machine)
-
-```bash
-# Windows
-winget install Python.Python.3.12 ; winget install Gyan.FFmpeg ; py -m airlog
-# macOS
-brew install python-tk ffmpeg && python3 -m airlog
-# Linux
-sudo apt install python3-tk ffmpeg && python3 -m airlog
-```
-
-It has the same features, plus *Open in editor after grab* (set the editor path
-in Settings → Grabs). On Windows, double-clicking `run_airlog.pyw` launches it
-without a console. The packaged builds open it with `--classic`; don't record
-with it while the service is running.
-
 ## Building
 
 ### Windows
@@ -598,7 +579,7 @@ double-click **`build_windows.bat`** (or run `.\build_windows.ps1`). It:
 
 1. creates a private build environment and installs PyInstaller;
 2. downloads an **LGPL** ffmpeg (BtbN's `win64-lgpl` build) and bundles
-   `ffmpeg.exe`, `ffprobe.exe` and `ffplay.exe`, so the PC needs nothing else.
+   `ffmpeg.exe` and `ffprobe.exe`, so the PC needs nothing else.
    `packaging/check_ffmpeg.py` checks it's LGPL and has every codec, protocol and
    filter Airlog uses, and writes `licenses/ffmpeg-NOTICE.txt` with the exact
    version and where its source is;
@@ -657,6 +638,11 @@ pip install flask waitress            # plus shazamio for song identification
 python3 -m airlog.server --config ./config.json --port 8080
 ```
 
+`python3 -m airlog` does the same with the per-user settings (see
+[Where things go](#where-things-go)) and the port set in them; stop it with
+Ctrl+C. Don't run it while the service is recording on the same machine. (The
+classic all-in-one desktop window was removed in 1.6.17.)
+
 Note that `--config` creates the file if it doesn't exist. On Linux and macOS,
 `python3 -m airlog --install-service` installs the service from a source
 checkout too (it runs `python3 -m airlog --service` from that folder, so leave
@@ -671,7 +657,7 @@ the checkout where it is).
 | Grab buffer | `~/Airlog/.spool` |
 | Settings (service) | Windows: `%ProgramData%\Airlog\config.json` · Linux: `/var/lib/airlog/config.json` · macOS: `~/Library/Application Support/Airlog/service.json` |
 | Airlog Viewer's list | Windows: `%APPDATA%\Airlog\viewer.json` · Linux: `~/.config/airlog/viewer.json` · macOS: `~/Library/Application Support/Airlog/viewer.json` (passwords are in the keychain) |
-| Settings (classic window) | Windows: `%APPDATA%\Airlog\` · Linux: `~/.config/airlog/` · macOS: `~/Library/Application Support/Airlog/config.json` |
+| Settings (from source) | Windows: `%APPDATA%\Airlog\` · Linux: `~/.config/airlog/` · macOS: `~/Library/Application Support/Airlog/config.json` |
 
 File names use strftime codes plus `{station}`; a `/` creates sub-folders. The
 time in an archive name is that file's start, so the first file after a start is

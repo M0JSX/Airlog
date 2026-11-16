@@ -96,7 +96,6 @@ class Config:
     grab_format: str = "wav"          # wav | mp3 | flac
     grab_pattern: str = "{station}_%Y-%m-%d_%H-%M-%S"
     grab_preroll_s: float = 0.0       # extra audio added before a grab's in-point
-    editor_path: str = ""             # blank = open with system default app
     open_after_grab: bool = False
 
     # --- Song identification (Shazam, unofficial API) ---

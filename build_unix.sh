@@ -2,7 +2,7 @@
 # Builds Airlog for Linux or macOS, for the machine's own CPU (x86_64 or arm64).
 #
 #   ./build_unix.sh                 full build: downloads ffmpeg, builds, self-tests, packages
-#   FFMPEG_DIR=/path ./build_unix.sh   use ffmpeg/ffprobe(/ffplay) you already have (static builds)
+#   FFMPEG_DIR=/path ./build_unix.sh   use ffmpeg/ffprobe you already have (static builds)
 #   ./build_unix.sh --no-deb        Linux: skip the .deb
 #
 # Linux  -> dist/Airlog/Airlog, dist/Airlog-<ver>-linux-<arch>.tar.gz, dist/airlog_<ver>_<debarch>.deb
@@ -61,7 +61,7 @@ FFDIR=.build/ffmpeg-$PLAT-$ARCH
 FF_SOURCE=""
 if [[ -n "${FFMPEG_DIR:-}" ]]; then
   rm -rf "$FFDIR"; mkdir -p "$FFDIR"
-  for t in ffmpeg ffprobe ffplay; do [[ -x "$FFMPEG_DIR/$t" ]] && cp "$FFMPEG_DIR/$t" "$FFDIR/"; done
+  for t in ffmpeg ffprobe; do [[ -x "$FFMPEG_DIR/$t" ]] && cp "$FFMPEG_DIR/$t" "$FFDIR/"; done
   FF_SOURCE="$FFMPEG_DIR"
 elif [[ ! -x "$FFDIR/ffmpeg" ]]; then
   # LGPL builds only (no GPL parts: Airlog doesn't use any). packaging/check_ffmpeg.py enforces it below.
@@ -72,7 +72,6 @@ elif [[ ! -x "$FFDIR/ffmpeg" ]]; then
     curl -fsSL --retry 3 -o .build/ff_dl/ff.tar.xz "$URL" && tar -xJf .build/ff_dl/ff.tar.xz -C .build/ff_dl \
       || { echo "ffmpeg download failed. Set FFMPEG_DIR to a folder with static LGPL ffmpeg + ffprobe."; exit 1; }
     cp .build/ff_dl/*/bin/ffmpeg .build/ff_dl/*/bin/ffprobe "$FFDIR/"
-    cp .build/ff_dl/*/bin/ffplay "$FFDIR/" 2>/dev/null || true
     cp .build/ff_dl/*/LICENSE.txt "$FFDIR/LICENSE.txt" 2>/dev/null || true
     FF_SOURCE="$URL (https://github.com/BtbN/FFmpeg-Builds)"
   else
@@ -86,7 +85,6 @@ fi
 [[ -n "$FF_SOURCE" ]] || FF_SOURCE=$(cat "$FFDIR/SOURCE" 2>/dev/null || echo "a static FFmpeg build")
 chmod +x "$FFDIR"/ff*
 for t in ffmpeg ffprobe; do [[ -x "$FFDIR/$t" ]] || { echo "$t missing from $FFDIR"; exit 1; }; done
-[[ -x "$FFDIR/ffplay" ]] || echo "  (no ffplay: preview in the classic desktop window won't be available)"
 [[ $PLAT == macos ]] && xattr -dr com.apple.quarantine "$FFDIR" 2>/dev/null || true
 "$FFDIR/ffmpeg" -hide_banner -version | head -1
 

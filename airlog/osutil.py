@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -44,13 +43,3 @@ def reveal(path: Path) -> None:
         subprocess.Popen(["open", "-R", str(path)] if path.is_file() else ["open", str(path)])
     else:
         subprocess.Popen(["xdg-open", str(path.parent if path.is_file() else path)])
-
-
-def find_ffplay(ffmpeg: str) -> str | None:
-    """ffplay alongside the configured ffmpeg, else on PATH."""
-    p = Path(ffmpeg)
-    if p.parent != Path("."):
-        cand = p.with_name("ffplay" + p.suffix)
-        if cand.exists():
-            return str(cand)
-    return shutil.which("ffplay")

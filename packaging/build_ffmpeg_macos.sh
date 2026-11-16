@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build a static, LGPL FFmpeg (plus ffprobe and ffplay) for macOS from source.
+# Build a static, LGPL FFmpeg (plus ffprobe) for macOS from source.
 #
 #   packaging/build_ffmpeg_macos.sh <output dir>
 #
 # Prebuilt macOS FFmpeg downloads are GPL builds (they include x264/x265); Airlog needs none of the
 # GPL parts, so this builds just what it uses, with LGPL or permissive libraries only:
-#   LAME (LGPL), libogg/libvorbis/opus (BSD), SRT (MPL-2.0), OpenSSL 3 (Apache-2.0), SDL2 (zlib, for ffplay).
+#   LAME (LGPL), libogg/libvorbis/opus (BSD), SRT (MPL-2.0), OpenSSL 3 (Apache-2.0).
 # OpenSSL 3's Apache licence needs LGPL v3, hence --enable-version3: the result is LGPL v3 or later.
 # Takes ~10 minutes on an Apple Silicon CI runner; build_unix.sh caches the result.
 set -euo pipefail
@@ -18,7 +18,6 @@ VORBIS_V=1.3.7
 OPUS_V=1.5.2
 OPENSSL_V=3.0.16
 SRT_V=1.5.4
-SDL_V=2.30.11
 
 ROOT=$(pwd)/.build/ffbuild
 PREFIX=$ROOT/prefix
@@ -58,7 +57,6 @@ fetch opus "https://downloads.xiph.org/releases/opus/opus-$OPUS_V.tar.gz" \
       "https://github.com/xiph/opus/releases/download/v$OPUS_V/opus-$OPUS_V.tar.gz"
 fetch openssl "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_V/openssl-$OPENSSL_V.tar.gz"
 fetch srt "https://github.com/Haivision/srt/archive/refs/tags/v$SRT_V.tar.gz"
-fetch sdl "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_V/SDL2-$SDL_V.tar.gz"
 
 autobuild() {   # dir, extra configure args...
   local d=$1; shift
@@ -86,26 +84,21 @@ echo "Building srt"
    -DUSE_ENCLIB=openssl -DOPENSSL_ROOT_DIR="$PREFIX" -DOPENSSL_USE_STATIC_LIBS=ON >/dev/null \
    && cmake --build build -j"$JOBS" >/dev/null && cmake --install build >/dev/null)
 
-echo "Building SDL2"
-(cd "$SRC/sdl" && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-   -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF >/dev/null \
-   && cmake --build build -j"$JOBS" >/dev/null && cmake --install build >/dev/null)
-
 echo "Building ffmpeg $FFMPEG_V (LGPL)"
 cd "$SRC/ffmpeg"
 ./configure --prefix="$PREFIX" --pkg-config-flags=--static \
   --extra-cflags="-I$PREFIX/include" --extra-ldflags="-L$PREFIX/lib" --extra-libs="-lc++" \
   --disable-shared --enable-static --enable-version3 \
   --disable-doc --disable-debug --disable-xlib --disable-libxcb --disable-sndio --disable-lzma \
-  --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libsrt --enable-openssl --enable-sdl2 \
+  --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libsrt --enable-openssl --disable-ffplay --disable-sdl2 \
   > "$ROOT/configure.log" || { tail -40 ffbuild/config.log; exit 1; }
 grep -q "^License: LGPL version 3 or later" "$ROOT/configure.log" \
   || { echo "ffmpeg didn't configure as LGPL v3:"; grep -i license "$ROOT/configure.log"; exit 1; }
 make -j"$JOBS" >/dev/null
-cp ffmpeg ffprobe ffplay "$OUT/"
+cp ffmpeg ffprobe "$OUT/"
 cp COPYING.LGPLv3 "$OUT/LICENSE.txt"
 echo "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_V.tar.xz (built by packaging/build_ffmpeg_macos.sh)" > "$OUT/SOURCE"
-for t in ffmpeg ffprobe ffplay; do
+for t in ffmpeg ffprobe; do
   if otool -L "$OUT/$t" | tail -n +2 | grep -v -E "^\s+(/usr/lib/|/System/Library/)"; then
     echo "$t links to a library outside macOS: it wouldn't run on another Mac"; exit 1
   fi

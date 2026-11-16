@@ -16,7 +16,7 @@ function Get-FromAirlog {
 $end = (Get-Date).AddSeconds(20)
 while ((Get-FromAirlog) -and (Get-Date) -lt $end) { Start-Sleep -Milliseconds 500 }
 
-# Anything still running from the folder (the classic desktop window, a stuck process): close it.
+# Anything still running from the folder (a stuck process, a desktop window from an older version): close it.
 $left = @(Get-FromAirlog)
 if ($left.Count) {
     $left | ForEach-Object { Write-Output "Closing $($_.Name) ($($_.Id)): $($_.Path)" }
