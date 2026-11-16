@@ -760,12 +760,17 @@ def _drop_reason(sock: socket.socket, e: BaseException, secs: float, peer=None) 
         said = ""
     m, sec = divmod(int(secs), 60)
     msg = f"{kind} after {m}m{sec:02d}s"
+    if said:
+        msg += f'; it said: "{said[:160]}"'
+        return msg
+    # A server shutting down drops its sources a moment before it stops accepting connections:
+    # give it a second before asking whether it's still there.
+    time.sleep(1.0)
     if _server_gone(peer):
         msg += " and isn't answering now (stopped or restarting?); retrying"
-    elif said:
-        msg += f'; it said: "{said[:160]}"'
-    elif secs < 15:
-        msg += " (dropped soon after connecting: often the server rejecting the stream format or bitrate)"
+    elif secs < 3:
+        # A rejected format or bitrate is refused at once, not after the stream has been running.
+        msg += " (dropped straight after connecting: often the server rejecting the stream format or bitrate)"
     return msg
 
 
