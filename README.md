@@ -13,7 +13,7 @@ send it on, processed, to wherever it needs to go.
   you want.
 - **Instant grabs:** select audio on a live waveform and download it seconds
   after it airs, or use the quick-grab buttons for the last 30 s to 15 minutes.
-  Clips come out as WAV, MP3 or FLAC, ready for Audition.
+  Clips come out as WAV, MP3 or FLAC, ready for an audio editor.
 - **Song identification:** Shazam names each song and marks it on the timeline,
   so you can select a whole song in one click.
 
